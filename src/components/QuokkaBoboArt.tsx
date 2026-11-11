@@ -1,171 +1,278 @@
-import React, { useId } from 'react';
+import React from 'react';
 
 const FUR = '#C99661';
+const FUR_ARM = '#9C6B3B';
 const INK = '#171210';
 const BOBO_WHITE = '#FFFFFF';
-const WOOD_STOOL = '#785634';
-const CUP_RED = '#C83D33';
+const STOOL_TOP = '#6C4C2E';
+const STOOL_LEG = '#785634';
 const BUTTER = '#F2CA62';
-
-function CrayonFilterDef({ id, scale = 1.9 }: { id: string; scale?: number }) {
-  return (
-    <defs>
-      <filter id={id} x="-10%" y="-10%" width="120%" height="120%">
-        <feTurbulence
-          type="fractalNoise"
-          baseFrequency="0.62"
-          numOctaves="4"
-          seed="7"
-          result="noise"
-        />
-        <feDisplacementMap
-          in="SourceGraphic"
-          in2="noise"
-          scale={Math.min(2.1, scale)}
-          xChannelSelector="R"
-          yChannelSelector="G"
-        />
-      </filter>
-    </defs>
-  );
-}
+const RED_STAMP = '#C83D33';
 
 /**
- * 99% Gold-Standard Dinotaeng Hero Illustration Banner (Quokka holding passport & ticket + BOBO on wooden stool holding retro mic + Marsh)
+ * Header 雙吉祥物徽章：100% 對齊韓國 Dinotaeng V2 黃金標準 (quokka_bobo_v2_gold_standard.png)
+ * - 帶乾粉彩毛邊濾鏡 (feTurbulence + feDisplacementMap)
+ * - 左：裸身焦糖矮袋鼠 Quokka（雙耳 V 字微靠無深色耳溝線、小圓眼間距偏近、圓潤黑豆鼻、100% 無嘴巴、小黑手捧紅護照與奶油黃登機證、外八黑腳掌）
+ * - 中：微笑棉花糖 Marsh 疊疊樂
+ * - 右：坐在深棕木頭矮凳上的純白無邊框雲朵 BOBO（小巧耳突起、圓黑眼＋一筆連貫黑鼻頭 ω 微笑嘴、舉手拿復古小麥克風）
  */
-export const HeroTravelBanner: React.FC<{
+export const QuokkaBoboTravelBadge: React.FC<{
   className?: string;
-}> = ({ className = 'w-32 h-22' }) => {
+  recording?: boolean;
+}> = ({ className = 'w-12 h-10', recording = false }) => {
   return (
     <div
-      className={`overflow-hidden rounded-2xl border border-[#DDD7C9] bg-[#D5D0C3] shadow-sm select-none shrink-0 ${className}`}
+      className={`relative inline-flex items-center justify-center rounded-2xl border border-[#DDD7C9] bg-[#D8D3C5] overflow-hidden shadow-sm select-none shrink-0 ${className}`}
       aria-hidden="true"
     >
-      <img
-        src="./assets/hero-bobo-travel.webp?v=1"
-        alt="Quokka & BOBO Travel Translator"
-        loading="eager"
-        decoding="async"
-        className="w-full h-full object-cover object-center"
-      />
+      <svg viewBox="0 0 136 102" className="w-full h-full">
+        <defs>
+          <filter id="bobo-pastel-edge" x="-8%" y="-8%" width="116%" height="116%">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.45"
+              numOctaves="3"
+              seed="7"
+              result="noise"
+            />
+            <feDisplacementMap
+              in="SourceGraphic"
+              in2="noise"
+              scale="2.1"
+              xChannelSelector="R"
+              yChannelSelector="G"
+            />
+          </filter>
+        </defs>
+
+        <rect width="136" height="102" fill="#D8D3C5" />
+
+        {/* Recording pulse ring when active */}
+        {recording && (
+          <circle
+            cx="104"
+            cy="42"
+            r="26"
+            fill="none"
+            stroke={RED_STAMP}
+            strokeWidth="2.5"
+            strokeDasharray="4 3"
+            opacity="0.75"
+          />
+        )}
+
+        {/* ==================== LEFT: QUOKKA (100% Bare Caramel Fur, Lumpy Pear Silhouette, Mouthless) ==================== */}
+        <g filter="url(#bobo-pastel-edge)">
+          {/* Authentic lumpy pear silhouette with ears meeting at V-notch (36, 21) and zero internal ear stroke */}
+          <path
+            d="M 28 30
+               C 16 30 13 12 24 11
+               C 31 11 35 17 36 21
+               C 37 17 41 11 48 11
+               C 59 12 56 30 44 30
+               C 55 34 57 46 52 53
+               C 58 61 61 78 58 91
+               C 52 96 20 96 14 91
+               C 11 78 14 61 20 53
+               C 15 46 17 34 28 30 Z"
+            fill={FUR}
+          />
+        </g>
+
+        {/* Close-set tiny hand-drawn black dot eyes */}
+        <circle cx="31.5" cy="35" r="2.2" fill={INK} />
+        <circle cx="40.5" cy="35" r="2.2" fill={INK} />
+
+        {/* Chunky round-oval black bean nose (strictly mouthless!) */}
+        <ellipse cx="36" cy="45" rx="5.1" ry="6" fill={INK} />
+
+        {/* Outward-angled flat black foot pads (\ /) */}
+        <rect
+          x="19"
+          y="80"
+          width="5.6"
+          height="15"
+          rx="2.8"
+          transform="rotate(-17 21.8 87.5)"
+          fill={INK}
+        />
+        <rect
+          x="48"
+          y="80"
+          width="5.6"
+          height="15"
+          rx="2.8"
+          transform="rotate(19 50.8 87.5)"
+          fill={INK}
+        />
+
+        {/* Vintage red Passport + Butter Yellow Boarding Pass on Quokka's chest */}
+        <g transform="rotate(-7 36 67)">
+          {/* Butter yellow boarding pass slip peeking out */}
+          <rect
+            x="29.5"
+            y="54.5"
+            width="12"
+            height="10"
+            rx="1.8"
+            fill={BUTTER}
+          />
+          {/* Vintage red passport cover */}
+          <rect
+            x="27.5"
+            y="59"
+            width="16"
+            height="19.5"
+            rx="2.4"
+            fill={RED_STAMP}
+          />
+          {/* Minimalist cream globe emblem */}
+          <circle
+            cx="35.5"
+            cy="68.8"
+            r="3.8"
+            fill="none"
+            stroke="#FAF8F3"
+            strokeWidth="1.1"
+          />
+          <ellipse
+            cx="35.5"
+            cy="68.8"
+            rx="1.8"
+            ry="3.8"
+            fill="none"
+            stroke="#FAF8F3"
+            strokeWidth="0.9"
+          />
+          <line
+            x1="31.7"
+            y1="68.8"
+            x2="39.3"
+            y2="68.8"
+            stroke="#FAF8F3"
+            strokeWidth="0.9"
+          />
+        </g>
+
+        {/* Short gentle brown arm curves + tiny black mitten paws holding passport */}
+        <path
+          d="M 21 63 Q 24 65 27 67"
+          stroke={FUR_ARM}
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          fill="none"
+        />
+        <path
+          d="M 51 62 Q 48 64 44 66"
+          stroke={FUR_ARM}
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          fill="none"
+        />
+        <circle cx="27.5" cy="68" r="3.4" fill={INK} />
+        <circle cx="44" cy="66.5" r="3.4" fill={INK} />
+
+        {/* ==================== CENTER: MARSHMALLOW TOWER ==================== */}
+        <g filter="url(#bobo-pastel-edge)">
+          <rect x="64" y="81" width="12" height="11" rx="2.5" fill={BOBO_WHITE} />
+          <rect x="64.5" y="71" width="11" height="10.5" rx="2.4" fill={BOBO_WHITE} />
+          <rect x="64" y="61" width="11.5" height="10.5" rx="2.4" fill={BOBO_WHITE} />
+        </g>
+        {/* Tiny Marsh smiley faces */}
+        <circle cx="68.2" cy="65.5" r="0.9" fill={INK} />
+        <circle cx="71.4" cy="65.5" r="0.9" fill={INK} />
+        <path
+          d="M 67.6 67.5 Q 69.8 69.4 72 67.5"
+          fill="none"
+          stroke={INK}
+          strokeWidth="1.1"
+          strokeLinecap="round"
+        />
+        <circle cx="68.4" cy="85.5" r="0.9" fill={INK} />
+        <circle cx="71.6" cy="85.5" r="0.9" fill={INK} />
+        <path
+          d="M 67.8 87.5 Q 70 89.4 72.2 87.5"
+          fill="none"
+          stroke={INK}
+          strokeWidth="1.1"
+          strokeLinecap="round"
+        />
+
+        {/* ==================== RIGHT: WOODEN STOOL & BORDERLESS CLOUD BOBO ==================== */}
+        <g filter="url(#bobo-pastel-edge)">
+          {/* Brown wooden stool */}
+          <rect x="83" y="72" width="42" height="6.2" rx="2.2" fill={STOOL_TOP} />
+          <rect x="87" y="77" width="6.5" height="17" rx="1.6" fill={STOOL_LEG} />
+          <rect x="114.5" y="77" width="6.5" height="17" rx="1.6" fill={STOOL_LEG} />
+
+          {/* Pure white borderless cloud BOBO body with small top ear-bumps (ZERO gray arm strokes) */}
+          <path
+            d="M 94 33
+               C 86 32 85 21 92 21
+               C 96 21 98 25 99 27
+               C 101 26 105 26 107 27
+               C 108 25 110 21 114 21
+               C 121 21 120 32 112 33
+               C 120 38 122 47 119 55
+               C 124 58 125 65 119 69
+               C 117 73 109 75 104 74
+               C 99 75 90 74 89 69
+               C 87 63 88 57 89 53
+               C 82 49 78 42 82 37
+               C 85 34 90 38 94 33 Z"
+            fill={BOBO_WHITE}
+          />
+        </g>
+
+        {/* Retro handheld microphone in BOBO's raised left paw */}
+        <g transform="rotate(-18 81 36)">
+          <rect x="78.5" y="34" width="4.4" height="11" rx="2" fill={BUTTER} />
+          <circle cx="80.7" cy="31.5" r="4.3" fill={RED_STAMP} />
+          <line
+            x1="76.8"
+            y1="31.5"
+            x2="84.6"
+            y2="31.5"
+            stroke={BUTTER}
+            strokeWidth="1.1"
+          />
+        </g>
+
+        {/* BOBO face: two round black dot eyes + connected black nose tip & upturned ω smile */}
+        <circle cx="98.5" cy="41.5" r="2.1" fill={INK} />
+        <circle cx="107.5" cy="41.5" r="2.1" fill={INK} />
+        <ellipse cx="103" cy="46.5" rx="2.1" ry="1.5" fill={INK} />
+        <path
+          d="M 103 46.8 L 103 49.4 M 98.3 49.2 Q 100.6 52.3 103 49.4 Q 105.4 52.3 107.7 49.2"
+          fill="none"
+          stroke={INK}
+          strokeWidth="2.1"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
     </div>
   );
 };
 
 /**
- * 99% Gold-Standard Vector Crayon Mini Mascot Duo Badge (100% borderless crayon texture, mouthless Quokka + ω smile BOBO)
+ * 頁首旅行橫幅插畫：正宗韓系 Dinotaeng V2 油性粉彩質感 (hero-bobo-travel.webp)
  */
-export const QuokkaBoboTravelBadge: React.FC<{
-  recording?: boolean;
-  className?: string;
-}> = ({ recording = false, className = 'w-14 h-12' }) => {
-  const rawId = useId().replace(/:/g, '');
-  const filterId = `dt-travel-${rawId}`;
-
+export const HeroTravelBanner: React.FC<{ className?: string }> = ({
+  className = 'w-36 h-24',
+}) => {
   return (
-    <svg
-      viewBox="0 0 120 96"
-      className={`select-none shrink-0 ${className}`}
+    <div
+      className={`overflow-hidden rounded-2xl border border-[#DDD7C9] bg-[#D8D3C5] shadow-sm select-none shrink-0 ${className}`}
       aria-hidden="true"
     >
-      <CrayonFilterDef id={filterId} scale={1.9} />
-      <rect width="120" height="96" rx="22" fill="#D8D3C5" />
-      {recording && (
-        <circle
-          cx="88"
-          cy="24"
-          r="10"
-          fill={CUP_RED}
-          opacity="0.22"
-          className="animate-ping"
-        />
-      )}
-      <g filter={`url(#${filterId})`}>
-        {/* Bare Caramel Quokka continuous mochi head+body silhouette with close-set crown ears */}
-        <path
-          d="M 36 27
-             C 32 15, 18 18, 21 31
-             C 15 38, 14 53, 20 62
-             C 17 72, 18 84, 25 87
-             C 32 89, 43 89, 50 87
-             C 57 84, 56 72, 52 62
-             C 58 53, 57 38, 51 31
-             C 54 18, 40 15, 36 27 Z"
-          fill={FUR}
-        />
-        <circle cx="31.5" cy="37.5" r="2.1" fill={INK} />
-        <circle cx="40.5" cy="37.5" r="2.1" fill={INK} />
-        <ellipse cx="36" cy="46" rx="4.6" ry="5.5" fill={INK} />
-        {/* Vintage red passport & butter yellow boarding pass */}
-        <rect x="29" y="57" width="14" height="17" rx="2" fill={CUP_RED} />
-        <rect x="31.5" y="53" width="9" height="6" rx="1.5" fill={BUTTER} />
-        <circle cx="28" cy="65" r="3.4" fill={INK} />
-        <circle cx="44" cy="65" r="3.4" fill={INK} />
-        <ellipse
-          cx="23"
-          cy="86"
-          rx="3.4"
-          ry="7.5"
-          transform="rotate(-22 23 86)"
-          fill={INK}
-        />
-        <ellipse
-          cx="49"
-          cy="86"
-          rx="3.4"
-          ry="7.5"
-          transform="rotate(22 49 86)"
-          fill={INK}
-        />
-
-        {/* Wooden stool + Pure White BOBO holding retro microphone */}
-        <rect x="70" y="76" width="34" height="5" rx="2" fill={WOOD_STOOL} />
-        <rect x="74" y="80" width="5" height="11" rx="1.5" fill={WOOD_STOOL} />
-        <rect x="95" y="80" width="5" height="11" rx="1.5" fill={WOOD_STOOL} />
-        <path
-          d="M 78 35
-             C 71 30, 67 37, 72 44
-             C 68 51, 68 65, 76 74
-             C 81 77, 93 77, 98 74
-             C 106 65, 106 51, 102 44
-             C 107 37, 103 30, 96 35
-             C 90 34, 84 34, 78 35 Z"
-          fill={BOBO_WHITE}
-        />
-        <circle cx="83" cy="45" r="1.9" fill={INK} />
-        <circle cx="91" cy="45" r="1.9" fill={INK} />
-        <path
-          d="M 87 48.5 L 87 51.5 M 82.6 51.4 Q 84.8 54.4 87 51.4 Q 89.2 54.4 91.4 51.4"
-          fill="none"
-          stroke={INK}
-          strokeWidth="1.9"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        {/* Retro handheld mic */}
-        <rect
-          x="81"
-          y="59"
-          width="3.6"
-          height="10"
-          rx="1.8"
-          transform="rotate(-15 83 64)"
-          fill={BUTTER}
-        />
-        <circle cx="81" cy="57" r="4.2" fill={CUP_RED} />
-
-        {/* Marsh companion */}
-        <rect x="57" y="74" width="11" height="10" rx="3" fill={BOBO_WHITE} />
-        <circle cx="60.5" cy="78" r="0.9" fill={INK} />
-        <circle cx="64.5" cy="78" r="0.9" fill={INK} />
-        <path
-          d="M 60.8 80.5 Q 62.5 82 64.2 80.5"
-          fill="none"
-          stroke={INK}
-          strokeWidth="1"
-          strokeLinecap="round"
-        />
-      </g>
-    </svg>
+      <img
+        src="./assets/hero-bobo-travel.webp?v=3"
+        alt="Quokka & BOBO 出國旅行翻譯小幫手"
+        loading="eager"
+        decoding="async"
+        className="w-full h-full object-cover object-center"
+      />
+    </div>
   );
 };

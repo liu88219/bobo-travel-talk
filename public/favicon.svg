@@ -28,7 +28,8 @@
     <path d="M 85 45 C 77 39, 73 48, 78 56 C 74 64, 74 82, 83 92 C 88 96, 102 96, 107 92 C 116 82, 116 64, 112 56 C 117 48, 113 39, 105 45 C 99 44, 91 44, 85 45 Z" fill="#FFFFFF"/>
     <circle cx="91" cy="57" r="2.2" fill="#171210"/>
     <circle cx="100" cy="57" r="2.2" fill="#171210"/>
-    <path d="M 95.5 61 L 95.5 64.5 M 90.5 64.4 Q 93 67.8 95.5 64.4 Q 98 67.8 100.5 64.4" fill="none" stroke="#171210" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+    <ellipse cx="95.5" cy="61.2" rx="2.2" ry="1.6" fill="#171210"/>
+    <path d="M 95.5 61.5 L 95.5 64.5 M 90.5 64.4 Q 93 67.8 95.5 64.4 Q 98 67.8 100.5 64.4" fill="none" stroke="#171210" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
     <!-- Retro Microphone -->
     <rect x="89" y="75" width="4" height="11" rx="2" transform="rotate(-15 91 80)" fill="#F2CA62"/>
     <circle cx="89" cy="72" r="5" fill="#C83D33"/>

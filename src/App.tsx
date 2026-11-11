@@ -97,6 +97,15 @@ import {
 
 type ActiveTab = 'talk' | 'live' | 'menu' | 'phrasebook' | 'calc';
 
+interface MenuCropRegion {
+  id: string;
+  label: string;
+  xPct: number;
+  yPct: number;
+  wPct: number;
+  hPct: number;
+}
+
 interface JumboShowCardData {
   titleZh: string;
   foreignText: string;
@@ -172,6 +181,18 @@ export default function App() {
   const [editingDishPrice, setEditingDishPrice] = useState('');
   const [activeNoteGroup, setActiveNoteGroup] = useState<'remove' | 'taste' | 'service'>('remove');
   const [customNoteInputZh, setCustomNoteInputZh] = useState('');
+  const [cropRegions, setCropRegions] = useState<MenuCropRegion[]>([
+    { id: 'reg-1', label: '區段 1', xPct: 8, yPct: 8, wPct: 84, hPct: 84 },
+  ]);
+  const [activeRegionId, setActiveRegionId] = useState<string>('reg-1');
+  const menuImageContainerRef = useRef<HTMLDivElement | null>(null);
+  const dragStateRef = useRef<{
+    mode: 'draw' | 'move' | 'nw' | 'ne' | 'sw' | 'se';
+    regionId: string;
+    startClientX: number;
+    startClientY: number;
+    startRect: { xPct: number; yPct: number; wPct: number; hPct: number };
+  } | null>(null);
 
   // Tab 4: Offline Phrasebook state
   const [selectedCategory, setSelectedCategory] = useState<PhraseCategory>('dining');
@@ -965,7 +986,8 @@ export default function App() {
     async (
       imageDataUrl: string,
       orientation: 'horizontal' | 'vertical',
-      existingSessionId?: string
+      existingSessionId?: string,
+      preservePhotoThumb?: string
     ) => {
       setIsAnalyzingMenu(true);
       setOcrStatusText('🔍 正在準備分析菜單圖片...');
@@ -992,7 +1014,7 @@ export default function App() {
               id: existingSessionId || `menu-photo-${now}`,
               title: aiMenu.title,
               lang: activeLang,
-              photoThumb: imageDataUrl,
+              photoThumb: preservePhotoThumb || imageDataUrl,
               hasLocalHiResPhoto: true,
               ocrEngine: 'gemini',
               orientation,
@@ -1032,9 +1054,9 @@ export default function App() {
           title:
             ocrRes.items.length > 0
               ? ocrRes.title
-              : `${langCfg.flag} 實拍菜單（請點下方切換直書／局部區塊重掃）`,
+              : `${langCfg.flag} 實拍菜單（可在照片上拖曳框選要翻譯的區段）`,
           lang: activeLang,
-          photoThumb: imageDataUrl,
+          photoThumb: preservePhotoThumb || imageDataUrl,
           hasLocalHiResPhoto: true,
           ocrEngine: 'tesseract-ocr',
           orientation,
@@ -1064,16 +1086,16 @@ export default function App() {
 
         if (ocrRes.items.length > 0) {
           notify(
-            `✅ 已從您上傳的照片真實辨識出 ${ocrRes.items.length} 道${langCfg.name}項目並翻成繁中！（若為直排菜單可點「↕️ 切換直書重掃」）`
+            `✅ 已從照片辨識出 ${ocrRes.items.length} 道${langCfg.name}項目！（亦可直接在照片上框選指定區段重翻）`
           );
         } else {
           setShowFreeMenuInput(true);
           notify(
-            '⚠️ 這張照片背景較複雜或為直排字，請點照片下方「↕️ 切換日本直書重掃」或「✂️ 裁切局部重掃」'
+            '⚠️ 這張照片背景較複雜，請直接在照片上「拖曳框選想翻譯的區段」或點「↕️ 切換日本直書重掃」'
           );
         }
       } catch {
-        notify('辨識菜單圖片時發生問題，請試著裁切局部或貼上文字翻譯');
+        notify('辨識菜單圖片時發生問題，請試著在照片上框選局部區段或貼上文字翻譯');
       } finally {
         setIsAnalyzingMenu(false);
         setOcrStatusText('');
@@ -1091,6 +1113,10 @@ export default function App() {
     if (!file) return;
     try {
       const thumbDataUrl = await compressImageFileToDataUrl(file, 1400, 0.86);
+      setCropRegions([
+        { id: 'reg-1', label: '區段 1', xPct: 8, yPct: 8, wPct: 84, hPct: 84 },
+      ]);
+      setActiveRegionId('reg-1');
       await runMenuImageRecognition(thumbDataUrl, menuOrientation);
     } catch {
       notify('讀取照片失敗，請重試');
@@ -1109,6 +1135,10 @@ export default function App() {
           if (file) {
             e.preventDefault();
             const thumbDataUrl = await compressImageFileToDataUrl(file, 1400, 0.86);
+            setCropRegions([
+              { id: 'reg-1', label: '區段 1', xPct: 8, yPct: 8, wPct: 84, hPct: 84 },
+            ]);
+            setActiveRegionId('reg-1');
             await runMenuImageRecognition(thumbDataUrl, menuOrientation);
             return;
           }
@@ -1119,26 +1149,357 @@ export default function App() {
     return () => window.removeEventListener('paste', onPaste);
   }, [activeTab, menuOrientation, runMenuImageRecognition]);
 
-  // Re-scan current menu photo with different orientation or cropped region
+  // Re-scan current menu photo with different orientation or cropped region preset (preserving full photo!)
   const handleRescanCurrentPhoto = async (
     newOrientation: 'horizontal' | 'vertical',
     cropPreset?: 'full' | 'left' | 'right' | 'top' | 'bottom' | 'center'
   ) => {
     if (!currentMenuSession?.photoThumb) return;
     setMenuOrientation(newOrientation);
-    let targetImg = currentMenuSession.photoThumb;
+    const fullImg = currentMenuSession.photoThumb;
+    let targetImg = fullImg;
     if (cropPreset === 'left') {
-      targetImg = await cropImageDataUrl(targetImg, { xPct: 2, yPct: 4, wPct: 48, hPct: 92 });
+      const rect = { xPct: 2, yPct: 4, wPct: 48, hPct: 92 };
+      setCropRegions([{ id: 'reg-1', label: '左半欄區段', ...rect }]);
+      setActiveRegionId('reg-1');
+      targetImg = await cropImageDataUrl(fullImg, rect);
     } else if (cropPreset === 'right') {
-      targetImg = await cropImageDataUrl(targetImg, { xPct: 50, yPct: 4, wPct: 48, hPct: 92 });
+      const rect = { xPct: 50, yPct: 4, wPct: 48, hPct: 92 };
+      setCropRegions([{ id: 'reg-1', label: '右半欄區段', ...rect }]);
+      setActiveRegionId('reg-1');
+      targetImg = await cropImageDataUrl(fullImg, rect);
     } else if (cropPreset === 'top') {
-      targetImg = await cropImageDataUrl(targetImg, { xPct: 4, yPct: 4, wPct: 92, hPct: 48 });
+      const rect = { xPct: 4, yPct: 4, wPct: 92, hPct: 48 };
+      setCropRegions([{ id: 'reg-1', label: '上半部區段', ...rect }]);
+      setActiveRegionId('reg-1');
+      targetImg = await cropImageDataUrl(fullImg, rect);
     } else if (cropPreset === 'bottom') {
-      targetImg = await cropImageDataUrl(targetImg, { xPct: 4, yPct: 50, wPct: 92, hPct: 48 });
+      const rect = { xPct: 4, yPct: 50, wPct: 92, hPct: 48 };
+      setCropRegions([{ id: 'reg-1', label: '下半部區段', ...rect }]);
+      setActiveRegionId('reg-1');
+      targetImg = await cropImageDataUrl(fullImg, rect);
     } else if (cropPreset === 'center') {
-      targetImg = await cropImageDataUrl(targetImg, { xPct: 10, yPct: 8, wPct: 80, hPct: 84 });
+      const rect = { xPct: 10, yPct: 8, wPct: 80, hPct: 84 };
+      setCropRegions([{ id: 'reg-1', label: '中央區段', ...rect }]);
+      setActiveRegionId('reg-1');
+      targetImg = await cropImageDataUrl(fullImg, rect);
+    } else {
+      setCropRegions([{ id: 'reg-1', label: '區段 1', xPct: 4, yPct: 4, wPct: 92, hPct: 92 }]);
+      setActiveRegionId('reg-1');
     }
-    await runMenuImageRecognition(targetImg, newOrientation, currentMenuSession.id);
+    await runMenuImageRecognition(
+      targetImg,
+      newOrientation,
+      currentMenuSession.id,
+      fullImg
+    );
+  };
+
+  /**
+   * ✂️ 只針對使用者在菜單照片上框選的 1～多個區段進行精準局部裁切 OCR 與中文翻譯！
+   */
+  const handleScanSelectedRegions = async (
+    regionsToScan: MenuCropRegion[],
+    mode: 'replace' | 'append'
+  ) => {
+    if (!currentMenuSession?.photoThumb) return;
+    if (regionsToScan.length === 0) {
+      notify('請先在菜單照片上拖曳畫出或新增至少 1 個要翻譯的區段框！');
+      return;
+    }
+    setIsAnalyzingMenu(true);
+    const fullImg = currentMenuSession.photoThumb;
+    const targetOrient = currentMenuSession.orientation || menuOrientation;
+    const hasGeminiKey = Boolean(
+      vaultRef.current.profile.geminiApiKey &&
+        vaultRef.current.profile.geminiApiKey.trim().length > 10
+    );
+
+    try {
+      const collectedItems: MenuScanSession['items'] = [];
+      for (let i = 0; i < regionsToScan.length; i++) {
+        const reg = regionsToScan[i];
+        setOcrStatusText(
+          `✂️ 正在裁切並翻譯「${reg.label}」(${i + 1}/${regionsToScan.length})...`
+        );
+        setOcrProgressPct(Math.round(((i + 0.3) / regionsToScan.length) * 85));
+        const croppedUrl = await cropImageDataUrl(fullImg, {
+          xPct: reg.xPct,
+          yPct: reg.yPct,
+          wPct: reg.wPct,
+          hPct: reg.hPct,
+        });
+
+        let regionItems: MenuScanSession['items'] = [];
+        if (hasGeminiKey) {
+          const aiMenu = await analyzeMenuPhotoWithGemini({
+            imageDataUrl: croppedUrl,
+            targetLang: currentMenuSession.lang,
+            geminiApiKey: vaultRef.current.profile.geminiApiKey || '',
+            geminiModel: vaultRef.current.profile.geminiModel,
+          });
+          if (aiMenu && aiMenu.items.length > 0) {
+            regionItems = aiMenu.items.map((it, idx) => ({
+              ...it,
+              id: `reg-ai-${Date.now()}-${i}-${idx}`,
+              descriptionZh: it.descriptionZh
+                ? `[${reg.label}] ${it.descriptionZh}`
+                : `📍 來自框選：${reg.label}`,
+            }));
+          }
+        }
+
+        if (regionItems.length === 0) {
+          const ocrRes = await analyzeMenuPhotoFreeOcr({
+            imageDataUrl: croppedUrl,
+            targetLang: currentMenuSession.lang,
+            orientation: targetOrient,
+            onProgress: (status, pct) => {
+              setOcrStatusText(`[${reg.label}] ${status}`);
+              setOcrProgressPct(
+                Math.min(
+                  98,
+                  Math.round(((i + pct / 100) / regionsToScan.length) * 100)
+                )
+              );
+            },
+          });
+          regionItems = ocrRes.items.map((it, idx) => ({
+            ...it,
+            id: `reg-ocr-${Date.now()}-${i}-${idx}`,
+            descriptionZh: it.descriptionZh
+              ? `[${reg.label}] ${it.descriptionZh}`
+              : `📍 來自框選：${reg.label}`,
+          }));
+        }
+
+        collectedItems.push(...regionItems);
+      }
+
+      if (collectedItems.length === 0) {
+        notify('⚠️ 框選的區段內未偵測到清晰文字，請試著拉大選取框或切換「↕️ 直書／↔️ 橫排」再試一次！');
+        return;
+      }
+
+      const now = Date.now();
+      await commitVaultUpdate((prev) => ({
+        ...prev,
+        isUneditedDefault: false,
+        updatedAt: now,
+        menuSessions: prev.menuSessions.map((m) =>
+          m.id === currentMenuSession.id
+            ? {
+                ...m,
+                updatedAt: now,
+                items:
+                  mode === 'replace'
+                    ? collectedItems
+                    : [...collectedItems, ...m.items],
+              }
+            : m
+        ),
+      }));
+
+      setFreeMenuPasteText(
+        (mode === 'replace'
+          ? collectedItems
+          : [...collectedItems, ...currentMenuSession.items]
+        )
+          .map(
+            (it) =>
+              `${it.originalName}${it.priceForeign ? ` ${it.priceForeign}` : ''}`
+          )
+          .join('\n')
+      );
+
+      notify(
+        mode === 'replace'
+          ? `🎯 已精準翻譯您框選的 ${regionsToScan.length} 個區段，共 ${collectedItems.length} 道項目！`
+          : `➕ 已將框選區段的 ${collectedItems.length} 道項目加入目前菜單！`
+      );
+    } finally {
+      setIsAnalyzingMenu(false);
+      setOcrStatusText('');
+      setOcrProgressPct(0);
+    }
+  };
+
+  // Interactive Pointer Handlers for Drawing / Moving / Resizing Crop Regions on Menu Photo
+  const handleAddCropRegion = () => {
+    const nextNum = cropRegions.length + 1;
+    const offset = ((nextNum - 1) * 7) % 30;
+    const newReg: MenuCropRegion = {
+      id: `reg-${Date.now()}`,
+      label: `區段 ${nextNum}`,
+      xPct: Math.min(55, 10 + offset),
+      yPct: Math.min(55, 12 + offset),
+      wPct: 42,
+      hPct: 34,
+    };
+    setCropRegions((prev) => [...prev, newReg]);
+    setActiveRegionId(newReg.id);
+  };
+
+  const handleRemoveCropRegion = (regionId: string) => {
+    setCropRegions((prev) => {
+      const next = prev.filter((r) => r.id !== regionId);
+      if (activeRegionId === regionId && next.length > 0) {
+        setActiveRegionId(next[0].id);
+      }
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const onPointerMove = (e: PointerEvent) => {
+      const st = dragStateRef.current;
+      const container = menuImageContainerRef.current;
+      if (!st || !container) return;
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const dxPct = ((e.clientX - st.startClientX) / rect.width) * 100;
+      const dyPct = ((e.clientY - st.startClientY) / rect.height) * 100;
+
+      setCropRegions((prev) =>
+        prev.map((reg) => {
+          if (reg.id !== st.regionId) return reg;
+          let { xPct, yPct, wPct, hPct } = st.startRect;
+          if (st.mode === 'move') {
+            xPct = Math.max(0, Math.min(100 - wPct, xPct + dxPct));
+            yPct = Math.max(0, Math.min(100 - hPct, yPct + dyPct));
+          } else if (st.mode === 'draw') {
+            const curX = Math.max(
+              0,
+              Math.min(100, ((e.clientX - rect.left) / rect.width) * 100)
+            );
+            const curY = Math.max(
+              0,
+              Math.min(100, ((e.clientY - rect.top) / rect.height) * 100)
+            );
+            const left = Math.min(st.startRect.xPct, curX);
+            const top = Math.min(st.startRect.yPct, curY);
+            const width = Math.max(8, Math.abs(curX - st.startRect.xPct));
+            const height = Math.max(8, Math.abs(curY - st.startRect.yPct));
+            xPct = Math.min(92, left);
+            yPct = Math.min(92, top);
+            wPct = Math.min(100 - xPct, width);
+            hPct = Math.min(100 - yPct, height);
+          } else if (st.mode === 'se') {
+            wPct = Math.max(10, Math.min(100 - xPct, wPct + dxPct));
+            hPct = Math.max(8, Math.min(100 - yPct, hPct + dyPct));
+          } else if (st.mode === 'nw') {
+            const newX = Math.max(0, Math.min(xPct + wPct - 10, xPct + dxPct));
+            const newY = Math.max(0, Math.min(yPct + hPct - 8, yPct + dyPct));
+            wPct = wPct - (newX - xPct);
+            hPct = hPct - (newY - yPct);
+            xPct = newX;
+            yPct = newY;
+          } else if (st.mode === 'ne') {
+            const newY = Math.max(0, Math.min(yPct + hPct - 8, yPct + dyPct));
+            wPct = Math.max(10, Math.min(100 - xPct, wPct + dxPct));
+            hPct = hPct - (newY - yPct);
+            yPct = newY;
+          } else if (st.mode === 'sw') {
+            const newX = Math.max(0, Math.min(xPct + wPct - 10, xPct + dxPct));
+            wPct = wPct - (newX - xPct);
+            hPct = Math.max(8, Math.min(100 - yPct, hPct + dyPct));
+            xPct = newX;
+          }
+          return {
+            ...reg,
+            xPct: Math.round(xPct * 10) / 10,
+            yPct: Math.round(yPct * 10) / 10,
+            wPct: Math.round(wPct * 10) / 10,
+            hPct: Math.round(hPct * 10) / 10,
+          };
+        })
+      );
+    };
+
+    const onPointerUp = () => {
+      dragStateRef.current = null;
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, []);
+
+  /**
+   * 🗑️ 刪除目前整份菜單紀錄（含照片與項目，並記錄雲端同步墓碑）
+   */
+  const handleDeleteCurrentMenuSession = async () => {
+    if (!currentMenuSession) return;
+    const delId = currentMenuSession.id;
+    const now = Date.now();
+    const remaining = vaultRef.current.menuSessions.filter(
+      (m) => m.id !== delId
+    );
+    setActiveMenuId(remaining[0]?.id || '');
+    await commitVaultUpdate((prev) => ({
+      ...prev,
+      isUneditedDefault: false,
+      updatedAt: now,
+      menuSessions: prev.menuSessions.filter((m) => m.id !== delId),
+      deletedIds: {
+        ...prev.deletedIds,
+        [delId]: now,
+      },
+    }));
+    notify('🗑️ 已刪除此份菜單紀錄！');
+  };
+
+  /**
+   * 🗑️ 移除目前菜單的照片（保留或重拍）
+   */
+  const handleDeleteCurrentMenuPhoto = async () => {
+    if (!currentMenuSession) return;
+    const now = Date.now();
+    await commitVaultUpdate((prev) => ({
+      ...prev,
+      isUneditedDefault: false,
+      updatedAt: now,
+      menuSessions: prev.menuSessions.map((m) =>
+        m.id === currentMenuSession.id
+          ? {
+              ...m,
+              photoThumb: undefined,
+              hasLocalHiResPhoto: false,
+              updatedAt: now,
+            }
+          : m
+      ),
+    }));
+    notify('🗑️ 已移除此張菜單照片，您可以隨時重新拍照或上傳新照片！');
+  };
+
+  /**
+   * 🗑️ 一鍵清空目前辨識出的所有菜名區段，方便重新在照片上框選想翻譯的區段
+   */
+  const handleClearAllMenuItems = async () => {
+    if (!currentMenuSession) return;
+    const now = Date.now();
+    await commitVaultUpdate((prev) => ({
+      ...prev,
+      isUneditedDefault: false,
+      updatedAt: now,
+      menuSessions: prev.menuSessions.map((m) =>
+        m.id === currentMenuSession.id
+          ? {
+              ...m,
+              items: [],
+              updatedAt: now,
+            }
+          : m
+      ),
+    }));
+    notify('🗑️ 已清空辨識清單，請在照片上框選您想翻譯的區段並點「🎯 只翻譯我框選的區段」！');
   };
 
   const handleParseFreeMenuLines = async (replaceAll = false) => {
@@ -2892,19 +3253,30 @@ export default function App() {
                     </p>
                   </div>
 
-                  {vault.menuSessions.length > 1 && (
-                    <select
-                      value={currentMenuSession.id}
-                      onChange={(e) => setActiveMenuId(e.target.value)}
-                      className="px-2.5 py-1.5 rounded-xl bg-[#EFECE4] border border-[#DDD7C9] text-xs font-bold text-[#2D251E]"
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {vault.menuSessions.length > 1 && (
+                      <select
+                        value={currentMenuSession.id}
+                        onChange={(e) => setActiveMenuId(e.target.value)}
+                        className="px-2.5 py-1.5 rounded-xl bg-[#EFECE4] border border-[#DDD7C9] text-xs font-bold text-[#2D251E]"
+                      >
+                        {vault.menuSessions.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.title}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteCurrentMenuSession()}
+                      className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-[#C83D33]/10 border border-[#DDD7C9] text-xs font-black text-[#C83D33] inline-flex items-center gap-1 transition active:scale-95"
+                      title="刪除此份菜單紀錄"
                     >
-                      {vault.menuSessions.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.title}
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>刪除此份菜單</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Restaurant Location Info & 1-Tap Google Maps / Tabelog / Official Menu Links */}
@@ -2963,52 +3335,318 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Uploaded Menu Photo Preview + Re-scan Orientation / Region Crop Toolbar */}
+                {/* Uploaded Menu Photo Preview + Interactive Multi-Region Drag/Resize/Delete Selector */}
                 {currentMenuSession.photoThumb && (
-                  <div className="p-3 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9] space-y-2.5">
+                  <div className="p-3 rounded-2xl bg-[#EFECE4] border-2 border-[#C48E63] space-y-2.5">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <span className="text-xs font-black text-[#2D251E]">
-                        🖼️ 您上傳的菜單原圖（可切換直書／橫書或局部放大重掃）：
-                      </span>
+                      <div>
+                        <span className="text-xs font-black text-[#2D251E] block">
+                          ✂️ 在菜單照片上「拖曳框選、調整或刪除」想翻譯的區段：
+                        </span>
+                        <span className="text-[11px] font-bold text-[#5C5044]">
+                          手指／滑鼠在照片空白處拖曳可**畫新選取框**；拖動框內可**移動**、拉四角圓點可**縮放**、點框右上角 `✕` 可**刪除此框**！
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFreeMenuPasteText(
+                              currentMenuSession.items
+                                .map(
+                                  (it) =>
+                                    `${it.originalName}${
+                                      it.priceForeign ? ` ${it.priceForeign}` : ''
+                                    }`
+                                )
+                                .join('\n')
+                            );
+                            setShowFreeMenuInput(true);
+                          }}
+                          className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-black text-[#2D251E]"
+                        >
+                          ✍️ 批次編輯文字
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteCurrentMenuPhoto()}
+                          className="px-2.5 py-1 rounded-xl bg-white hover:bg-[#C83D33]/10 border border-[#DDD7C9] text-[11px] font-black text-[#C83D33] inline-flex items-center gap-1"
+                          title="刪除此張菜單照片"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>刪除照片</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Interactive Touch/Mouse Crop Canvas */}
+                    <div className="w-full overflow-hidden rounded-2xl border-2 border-[#DDD7C9] bg-[#2D251E]/90 flex items-center justify-center p-1">
+                      <div
+                        ref={menuImageContainerRef}
+                        onPointerDown={(e) => {
+                          if (e.target !== e.currentTarget && (e.target as HTMLElement).tagName !== 'IMG') {
+                            return;
+                          }
+                          const container = menuImageContainerRef.current;
+                          if (!container) return;
+                          const rect = container.getBoundingClientRect();
+                          if (rect.width <= 0 || rect.height <= 0) return;
+                          const startX = Math.max(
+                            0,
+                            Math.min(100, ((e.clientX - rect.left) / rect.width) * 100)
+                          );
+                          const startY = Math.max(
+                            0,
+                            Math.min(100, ((e.clientY - rect.top) / rect.height) * 100)
+                          );
+                          const newId = `reg-${Date.now()}`;
+                          const nextNum = cropRegions.length + 1;
+                          const newReg: MenuCropRegion = {
+                            id: newId,
+                            label: `區段 ${nextNum}`,
+                            xPct: Math.round(startX * 10) / 10,
+                            yPct: Math.round(startY * 10) / 10,
+                            wPct: 14,
+                            hPct: 12,
+                          };
+                          setCropRegions((prev) => [...prev, newReg]);
+                          setActiveRegionId(newId);
+                          dragStateRef.current = {
+                            mode: 'draw',
+                            regionId: newId,
+                            startClientX: e.clientX,
+                            startClientY: e.clientY,
+                            startRect: {
+                              xPct: startX,
+                              yPct: startY,
+                              wPct: 14,
+                              hPct: 12,
+                            },
+                          };
+                        }}
+                        className="relative inline-block max-h-80 select-none touch-none cursor-crosshair"
+                      >
+                        <img
+                          src={currentMenuSession.photoThumb}
+                          alt="上傳的菜單照片"
+                          draggable={false}
+                          className="max-h-80 w-auto object-contain block pointer-events-none select-none"
+                        />
+
+                        {/* Overlay Selection Boxes */}
+                        {cropRegions.map((reg, rIdx) => {
+                          const isSelected = reg.id === activeRegionId;
+                          return (
+                            <div
+                              key={reg.id}
+                              onPointerDown={(e) => {
+                                e.stopPropagation();
+                                setActiveRegionId(reg.id);
+                                dragStateRef.current = {
+                                  mode: 'move',
+                                  regionId: reg.id,
+                                  startClientX: e.clientX,
+                                  startClientY: e.clientY,
+                                  startRect: {
+                                    xPct: reg.xPct,
+                                    yPct: reg.yPct,
+                                    wPct: reg.wPct,
+                                    hPct: reg.hPct,
+                                  },
+                                };
+                              }}
+                              style={{
+                                left: `${reg.xPct}%`,
+                                top: `${reg.yPct}%`,
+                                width: `${reg.wPct}%`,
+                                height: `${reg.hPct}%`,
+                              }}
+                              className={`absolute rounded-lg cursor-move transition-shadow ${
+                                isSelected
+                                  ? 'border-2 border-[#F2CA62] bg-[#F2CA62]/20 shadow-[0_0_0_2px_rgba(45,37,30,0.75)] z-20'
+                                  : 'border-2 border-dashed border-white/90 bg-[#1E3158]/25 z-10'
+                              }`}
+                            >
+                              {/* Top-Left Region Badge */}
+                              <div className="absolute -top-3 left-1 px-1.5 py-0.2 rounded-md bg-[#F2CA62] text-[#2D251E] border border-[#2D251E] text-[10px] font-black whitespace-nowrap shadow-sm">
+                                {rIdx + 1}. {reg.label}
+                              </div>
+
+                              {/* Top-Right Delete Region Box Button */}
+                              <button
+                                type="button"
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRemoveCropRegion(reg.id);
+                                }}
+                                className="absolute -top-3 -right-2 w-5 h-5 rounded-full bg-[#C83D33] text-white border border-white text-[10px] font-black flex items-center justify-center shadow-sm"
+                                title="刪除此選取框"
+                              >
+                                ✕
+                              </button>
+
+                              {/* Bottom-Right Instant Single-Region Translate Pill */}
+                              <button
+                                type="button"
+                                disabled={isAnalyzingMenu}
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void handleScanSelectedRegions([reg], 'replace');
+                                }}
+                                className="absolute -bottom-3 right-1 px-2 py-0.5 rounded-full bg-[#1E3158] hover:bg-[#152442] text-white border border-[#F2CA62] text-[10px] font-black whitespace-nowrap shadow-sm"
+                                title="只翻譯這個框選區段"
+                              >
+                                🔍 翻這區
+                              </button>
+
+                              {/* 4 Corner Resize Handles */}
+                              {(
+                                [
+                                  { mode: 'nw', pos: '-top-1.5 -left-1.5 cursor-nwse-resize' },
+                                  { mode: 'ne', pos: '-top-1.5 -right-1.5 cursor-nesw-resize' },
+                                  { mode: 'sw', pos: '-bottom-1.5 -left-1.5 cursor-nesw-resize' },
+                                  { mode: 'se', pos: '-bottom-1.5 -right-1.5 cursor-nwse-resize' },
+                                ] as const
+                              ).map((h) => (
+                                <div
+                                  key={h.mode}
+                                  onPointerDown={(e) => {
+                                    e.stopPropagation();
+                                    setActiveRegionId(reg.id);
+                                    dragStateRef.current = {
+                                      mode: h.mode,
+                                      regionId: reg.id,
+                                      startClientX: e.clientX,
+                                      startClientY: e.clientY,
+                                      startRect: {
+                                        xPct: reg.xPct,
+                                        yPct: reg.yPct,
+                                        wPct: reg.wPct,
+                                        hPct: reg.hPct,
+                                      },
+                                    };
+                                  }}
+                                  className={`absolute ${h.pos} w-3.5 h-3.5 rounded-full bg-[#F2CA62] border-2 border-[#2D251E]`}
+                                />
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Region Chips Manager + Add/Delete Region Controls */}
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[11px] font-black text-[#2D251E]">
+                          📌 已框選區段 ({cropRegions.length})：
+                        </span>
+                        {cropRegions.map((reg, idx) => (
+                          <div
+                            key={reg.id}
+                            onClick={() => setActiveRegionId(reg.id)}
+                            className={`cursor-pointer inline-flex items-center gap-1 px-2 py-1 rounded-xl text-[11px] font-black border transition ${
+                              reg.id === activeRegionId
+                                ? 'bg-[#F2CA62] text-[#2D251E] border-[#C48E63]'
+                                : 'bg-white text-[#5C5044] border-[#DDD7C9]'
+                            }`}
+                          >
+                            <span>
+                              {idx + 1}. {reg.label}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={isAnalyzingMenu}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleScanSelectedRegions([reg], 'replace');
+                              }}
+                              className="px-1.5 py-0.2 rounded bg-[#1E3158] text-white text-[10px]"
+                              title="只翻譯此區段"
+                            >
+                              翻此區
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRemoveCropRegion(reg.id);
+                              }}
+                              className="text-[#C83D33] hover:scale-110 px-0.5"
+                              title="刪除此區段框"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={handleAddCropRegion}
+                          className="px-2.5 py-1 rounded-xl bg-white hover:bg-[#F2CA62]/40 border border-[#C48E63] text-[11px] font-black text-[#2D251E] inline-flex items-center gap-1"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>新增選取框</span>
+                        </button>
+                      </div>
+
+                      {currentMenuSession.items.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => void handleClearAllMenuItems()}
+                          className="px-2.5 py-1 rounded-xl bg-white hover:bg-[#C83D33]/10 border border-[#DDD7C9] text-[11px] font-bold text-[#C83D33] inline-flex items-center gap-1"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>清空目前翻譯結果重選</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Primary CTA: Translate Selected Regions Only! */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <button
                         type="button"
-                        onClick={() => {
-                          setFreeMenuPasteText(
-                            currentMenuSession.items
-                              .map(
-                                (it) =>
-                                  `${it.originalName}${
-                                    it.priceForeign ? ` ${it.priceForeign}` : ''
-                                  }`
-                              )
-                              .join('\n')
-                          );
-                          setShowFreeMenuInput(true);
-                        }}
-                        className="text-[11px] font-black text-[#C48E63] underline"
+                        disabled={isAnalyzingMenu || cropRegions.length === 0}
+                        onClick={() =>
+                          void handleScanSelectedRegions(cropRegions, 'replace')
+                        }
+                        className="py-2.5 px-3.5 rounded-2xl bg-[#1E3158] hover:bg-[#152442] disabled:opacity-40 text-white text-xs font-black flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition"
                       >
-                        ✍️ 批次編輯所有辨識文字
+                        <Crop className="w-3.5 h-3.5 text-[#F2CA62]" />
+                        <span>
+                          🎯 只翻譯我框選的 {cropRegions.length} 個區段（取代目前清單）
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isAnalyzingMenu || cropRegions.length === 0}
+                        onClick={() =>
+                          void handleScanSelectedRegions(cropRegions, 'append')
+                        }
+                        className="py-2.5 px-3.5 rounded-2xl bg-[#F2CA62] hover:bg-[#e8be52] disabled:opacity-40 text-[#2D251E] border border-[#C48E63] text-xs font-black flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>
+                          ➕ 翻譯我框選的區段（加到目前菜單清單）
+                        </span>
                       </button>
                     </div>
 
-                    <div className="max-h-56 overflow-hidden rounded-xl border border-[#DDD7C9] bg-white flex items-center justify-center">
-                      <img
-                        src={currentMenuSession.photoThumb}
-                        alt="上傳的菜單照片"
-                        className="max-h-56 w-auto object-contain"
-                      />
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-1.5">
+                    {/* Quick Preset Region & Orientation Buttons */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-[#DDD7C9]">
+                      <span className="text-[11px] font-bold text-[#8A7E70]">
+                        ⚡ 快捷區段重掃：
+                      </span>
                       <button
                         type="button"
                         disabled={isAnalyzingMenu}
                         onClick={() =>
                           void handleRescanCurrentPhoto('horizontal', 'full')
                         }
-                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-black text-[#2D251E] hover:bg-[#F2CA62]/40"
+                        className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-black text-[#2D251E] hover:bg-[#F2CA62]/40"
                       >
-                        ↔️ 橫排重掃整張
+                        ↔️ 橫排整張
                       </button>
                       <button
                         type="button"
@@ -3016,9 +3654,9 @@ export default function App() {
                         onClick={() =>
                           void handleRescanCurrentPhoto('vertical', 'full')
                         }
-                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#C48E63] text-[11px] font-black text-[#2D251E] hover:bg-[#F2CA62]/40"
+                        className="px-2.5 py-1 rounded-xl bg-white border border-[#C48E63] text-[11px] font-black text-[#2D251E] hover:bg-[#F2CA62]/40"
                       >
-                        ↕️ 日本直書（縦書き）重掃
+                        ↕️ 日本直書（縦書き）整張
                       </button>
                       <button
                         type="button"
@@ -3029,10 +3667,9 @@ export default function App() {
                             'top'
                           )
                         }
-                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                        className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044]"
                       >
-                        <Crop className="w-3 h-3" />
-                        <span>只翻上半部</span>
+                        只翻上半部
                       </button>
                       <button
                         type="button"
@@ -3043,10 +3680,9 @@ export default function App() {
                             'bottom'
                           )
                         }
-                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                        className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044]"
                       >
-                        <Crop className="w-3 h-3" />
-                        <span>只翻下半部</span>
+                        只翻下半部
                       </button>
                       <button
                         type="button"
@@ -3057,10 +3693,9 @@ export default function App() {
                             'left'
                           )
                         }
-                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                        className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044]"
                       >
-                        <Crop className="w-3 h-3" />
-                        <span>只翻左半欄</span>
+                        只翻左半欄
                       </button>
                       <button
                         type="button"
@@ -3071,10 +3706,9 @@ export default function App() {
                             'right'
                           )
                         }
-                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                        className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044]"
                       >
-                        <Crop className="w-3 h-3" />
-                        <span>只翻右半欄</span>
+                        只翻右半欄
                       </button>
                       <button
                         type="button"
@@ -3085,16 +3719,15 @@ export default function App() {
                             'center'
                           )
                         }
-                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                        className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044]"
                       >
-                        <Crop className="w-3 h-3" />
-                        <span>去邊框掃中央</span>
+                        去邊框掃中央
                       </button>
                     </div>
                   </div>
                 )}
 
-                {/* STEP 1: 📖 先看懂菜單內容（中文翻譯一覽表 — 大字好讀！） */}
+                {/* STEP 1: 📖 先看懂菜單內容（中文翻譯一覽表 — 每筆皆可直接編輯改字或一鍵刪除不要的區段！） */}
                 {currentMenuSession.items.length > 0 && (
                   <div className="p-3.5 rounded-2xl bg-[#FFFDF8] border-2 border-[#F2CA62] space-y-2.5">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -3103,35 +3736,45 @@ export default function App() {
                           步驟 1
                         </span>
                         <span className="text-xs sm:text-sm font-black text-[#2D251E]">
-                          📖 先看懂這份菜單賣什麼（繁體中文快速總覽）
+                          📖 先看懂這份菜單賣什麼（可逐筆 `✏️ 編輯` 或 `✕ 刪除` 不要的區段）
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const mCfg = LANGUAGES[currentMenuSession.lang] || langCfg;
-                          const rate =
-                            vault.profile.customRatesToTwd?.[currentMenuSession.lang] ||
-                            mCfg.defaultRateToTwd;
-                          const summaryText = currentMenuSession.items
-                            .map((it, idx) => {
-                              const twd = it.priceForeign
-                                ? ` / 約 NT$${Math.round(it.priceForeign * rate)}`
-                                : '';
-                              const priceStr = it.priceForeign
-                                ? ` — ${mCfg.currencySymbol}${it.priceForeign.toLocaleString()}${twd}`
-                                : '';
-                              return `${idx + 1}. ${it.translatedZh}（${it.originalName}）${priceStr}`;
-                            })
-                            .join('\n');
-                          navigator.clipboard?.writeText(summaryText);
-                          notify('📋 已複製整份中文菜單翻譯！');
-                        }}
-                        className="px-2.5 py-1 rounded-xl bg-[#EFECE4] hover:bg-[#e5e1d7] border border-[#DDD7C9] text-[11px] font-black text-[#2D251E] inline-flex items-center gap-1"
-                      >
-                        <Copy className="w-3 h-3" />
-                        <span>複製中文菜單</span>
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const mCfg = LANGUAGES[currentMenuSession.lang] || langCfg;
+                            const rate =
+                              vault.profile.customRatesToTwd?.[currentMenuSession.lang] ||
+                              mCfg.defaultRateToTwd;
+                            const summaryText = currentMenuSession.items
+                              .map((it, idx) => {
+                                const twd = it.priceForeign
+                                  ? ` / 約 NT$${Math.round(it.priceForeign * rate)}`
+                                  : '';
+                                const priceStr = it.priceForeign
+                                  ? ` — ${mCfg.currencySymbol}${it.priceForeign.toLocaleString()}${twd}`
+                                  : '';
+                                return `${idx + 1}. ${it.translatedZh}（${it.originalName}）${priceStr}`;
+                              })
+                              .join('\n');
+                            navigator.clipboard?.writeText(summaryText);
+                            notify('📋 已複製整份中文菜單翻譯！');
+                          }}
+                          className="px-2.5 py-1 rounded-xl bg-[#EFECE4] hover:bg-[#e5e1d7] border border-[#DDD7C9] text-[11px] font-black text-[#2D251E] inline-flex items-center gap-1"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>複製中文菜單</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleClearAllMenuItems()}
+                          className="px-2.5 py-1 rounded-xl bg-white hover:bg-[#C83D33]/10 border border-[#DDD7C9] text-[11px] font-bold text-[#C83D33] inline-flex items-center gap-1"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>清空重選</span>
+                        </button>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
@@ -3143,32 +3786,128 @@ export default function App() {
                         const twdPrice = dish.priceForeign
                           ? Math.round(dish.priceForeign * rate)
                           : null;
+                        const isEditingInStep1 = editingDishId === dish.id;
                         return (
                           <div
                             key={`summary-${dish.id}`}
-                            onClick={() => void handleUpdateDishQty(dish.id, 1)}
-                            className="cursor-pointer p-2.5 rounded-xl bg-[#FAF8F3] hover:bg-[#F2CA62]/25 border border-[#DDD7C9] flex items-start justify-between gap-2 transition"
-                            title="點一下可直接 +1 加入點餐"
+                            className={`p-2.5 rounded-xl border transition ${
+                              dish.quantity > 0
+                                ? 'bg-[#F2CA62]/25 border-[#C48E63]'
+                                : 'bg-[#FAF8F3] hover:bg-[#F2CA62]/15 border-[#DDD7C9]'
+                            }`}
                           >
-                            <div className="min-w-0">
-                              <div className="text-xs sm:text-sm font-black text-[#2D251E] leading-snug">
-                                <span className="text-[#C48E63] mr-1">
-                                  {idx + 1}.
-                                </span>
-                                {dish.translatedZh}
-                              </div>
-                              <div className="text-[11px] font-semibold text-[#8A7E70] truncate">
-                                {dish.originalName}
-                              </div>
-                            </div>
-                            {twdPrice !== null && (
-                              <div className="text-right shrink-0">
-                                <div className="text-xs font-black text-[#C83D33]">
-                                  約 NT${twdPrice.toLocaleString()}
+                            {isEditingInStep1 ? (
+                              <div className="space-y-1.5">
+                                <input
+                                  type="text"
+                                  value={editingDishOrig}
+                                  onChange={(e) => setEditingDishOrig(e.target.value)}
+                                  placeholder="外文原名（修改後留空中文可自動重翻）"
+                                  className="w-full px-2 py-1 rounded-lg bg-white border border-[#DDD7C9] text-xs font-bold"
+                                />
+                                <div className="flex gap-1.5">
+                                  <input
+                                    type="text"
+                                    value={editingDishZh}
+                                    onChange={(e) => setEditingDishZh(e.target.value)}
+                                    placeholder="中文翻譯（留空自動重翻）"
+                                    className="flex-1 px-2 py-1 rounded-lg bg-white border border-[#DDD7C9] text-xs"
+                                  />
+                                  <input
+                                    type="number"
+                                    value={editingDishPrice}
+                                    onChange={(e) => setEditingDishPrice(e.target.value)}
+                                    placeholder="價格"
+                                    className="w-20 px-2 py-1 rounded-lg bg-white border border-[#DDD7C9] text-xs"
+                                  />
                                 </div>
-                                <div className="text-[10px] font-bold text-[#8A7E70]">
-                                  {mCfg.currencySymbol}
-                                  {dish.priceForeign?.toLocaleString()}
+                                <div className="flex justify-end gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingDishId(null)}
+                                    className="px-2 py-0.5 rounded bg-[#EFECE4] text-[11px] font-bold"
+                                  >
+                                    取消
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingDishZh('');
+                                      void handleSaveInlineDishEdit(dish.id);
+                                    }}
+                                    className="px-2 py-0.5 rounded bg-[#1E3158] text-white text-[11px] font-black"
+                                  >
+                                    🔄 自動重翻
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleSaveInlineDishEdit(dish.id)}
+                                    className="px-2.5 py-0.5 rounded bg-[#C48E63] text-white text-[11px] font-black"
+                                  >
+                                    儲存
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-start justify-between gap-2">
+                                <div
+                                  onClick={() => void handleUpdateDishQty(dish.id, 1)}
+                                  className="min-w-0 flex-1 cursor-pointer"
+                                  title="點一下可直接 +1 加入點餐"
+                                >
+                                  <div className="text-xs sm:text-sm font-black text-[#2D251E] leading-snug flex items-center gap-1.5 flex-wrap">
+                                    <span>
+                                      <span className="text-[#C48E63] mr-1">
+                                        {idx + 1}.
+                                      </span>
+                                      {dish.translatedZh}
+                                    </span>
+                                    {dish.quantity > 0 && (
+                                      <span className="px-1.5 py-0.2 rounded-full bg-[#1E3158] text-white text-[10px] font-black">
+                                        已點 {dish.quantity} 份
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[11px] font-semibold text-[#8A7E70] truncate">
+                                    {dish.originalName}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-start gap-1.5 shrink-0">
+                                  {twdPrice !== null && (
+                                    <div className="text-right">
+                                      <div className="text-xs font-black text-[#C83D33]">
+                                        約 NT${twdPrice.toLocaleString()}
+                                      </div>
+                                      <div className="text-[10px] font-bold text-[#8A7E70]">
+                                        {mCfg.currencySymbol}
+                                        {dish.priceForeign?.toLocaleString()}
+                                      </div>
+                                    </div>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingDishId(dish.id);
+                                      setEditingDishOrig(dish.originalName);
+                                      setEditingDishZh(dish.translatedZh);
+                                      setEditingDishPrice(
+                                        dish.priceForeign ? String(dish.priceForeign) : ''
+                                      );
+                                    }}
+                                    className="p-1 rounded-lg bg-white hover:bg-[#F2CA62]/50 border border-[#DDD7C9] text-[#5C5044]"
+                                    title="編輯此區段文字並重翻"
+                                  >
+                                    <Edit3 className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDeleteDishItem(dish.id)}
+                                    className="p-1 rounded-lg bg-white hover:bg-[#C83D33]/15 border border-[#DDD7C9] text-[#C83D33]"
+                                    title="刪除此筆辨識區段"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
                                 </div>
                               </div>
                             )}
@@ -3177,7 +3916,7 @@ export default function App() {
                       })}
                     </div>
                     <p className="text-[11px] font-bold text-[#8A7E70]">
-                      💡 看懂中文後，直接點上方任一道菜（或在下方卡片按 `＋`）就能加入點餐清單！
+                      💡 點任一卡片可 `+1` 點餐；點卡片右側 `✏️` 可直接修改辨識文字重翻，點 `✕` 可單獨刪掉不需要的區段！
                     </p>
                   </div>
                 )}

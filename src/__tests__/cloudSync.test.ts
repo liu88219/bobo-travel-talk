@@ -15,6 +15,10 @@ import {
 import {
   extractImportantKeywords,
   translateTextDualEngine,
+  computeBackTranslationConfidence,
+  buildLocalWordBreakdowns,
+  cleanOcrMenuLines,
+  detectDishDietaryWarning,
 } from '../services/translatorEngine';
 
 describe('BoboTalk Cloud Sync & Translator Engine', () => {
@@ -91,7 +95,7 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     expect(kws.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('matches offline survival phrases with Taiwanese phonetic hint', async () => {
+  it('matches offline survival phrases with Taiwanese phonetic hint and back-translation verification', async () => {
     const res = await translateTextDualEngine({
       text: '不好意思，我們有兩位，請問現在有位子嗎？',
       direction: 'zh-to-foreign',
@@ -99,5 +103,44 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     });
     expect(res.translatedText).toContain('2人');
     expect(res.phoneticHint).toContain('斯咪媽線');
+    expect(res.confidenceScore).toBeGreaterThanOrEqual(80);
+  });
+
+  it('penalizes back-translation confidence when numbers or negations mismatch', () => {
+    const exactMatch = computeBackTranslationConfidence('請給我2份不要蔥', '請給我2份不要蔥');
+    const negationLost = computeBackTranslationConfidence('請給我2份不要蔥', '請給我2份加蔥');
+    const numberLost = computeBackTranslationConfidence('請給我3份拉麵', '請給我1份拉麵');
+    expect(exactMatch).toBeGreaterThanOrEqual(90);
+    expect(negationLost).toBeLessThan(exactMatch);
+    expect(numberLost).toBeLessThan(exactMatch);
+  });
+
+  it('extracts word-by-word verification tokens for Japanese and Korean sentences', () => {
+    const jaTokens = buildLocalWordBreakdowns('すみません、ネギ抜きで水を2つください', 'ja');
+    expect(jaTokens.some((t) => t.term.includes('抜き'))).toBe(true);
+    expect(jaTokens.some((t) => t.term.includes('水'))).toBe(true);
+
+    const koTokens = buildLocalWordBreakdowns('화장실은 어디에 있나요? 포장해 주세요', 'ko');
+    expect(koTokens.some((t) => t.term === '화장실')).toBe(true);
+    expect(koTokens.some((t) => t.term === '포장')).toBe(true);
+  });
+
+  it('cleans real OCR menu lines and detects dietary badges', () => {
+    const sampleOcr = `
+      === --- ===
+      名物！特選和牛カルビ・・・1,280円
+      豚骨チャーシューラーメン
+      ¥980
+      海鮮お刺身盛り合わせ 1580円
+    `;
+    const cleaned = cleanOcrMenuLines(sampleOcr);
+    expect(cleaned.length).toBe(3);
+    expect(cleaned[0]).toContain('和牛カルビ');
+    expect(cleaned[0]).toContain('1,280円');
+    // Standalone ¥980 line should be automatically merged onto the preceding dish line
+    expect(cleaned[1]).toContain('豚骨チャーシューラーメン ¥980');
+    expect(detectDishDietaryWarning(cleaned[0])).toContain('含牛肉');
+    expect(detectDishDietaryWarning(cleaned[1])).toContain('含豬肉');
+    expect(detectDishDietaryWarning(cleaned[2])).toContain('生食');
   });
 });

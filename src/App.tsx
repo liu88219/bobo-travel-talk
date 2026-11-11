@@ -2,21 +2,18 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   Mic,
   Volume2,
-  RotateCcw,
   RefreshCw,
   Star,
   Trash2,
   Maximize2,
   Sparkles,
   Camera,
-  ShoppingBag,
   BookOpen,
   Calculator,
   Radio,
   Settings,
   Eye,
   EyeOff,
-  Check,
   Plus,
   Minus,
   Download,
@@ -27,8 +24,11 @@ import {
   Send,
   X,
   History,
-  AlertCircle,
   Copy,
+  CheckCircle2,
+  Edit3,
+  Crop,
+  FileText,
 } from 'lucide-react';
 import {
   VaultState,
@@ -38,7 +38,6 @@ import {
   DialogueTurn,
   LiveSubtitleSegment,
   MenuScanSession,
-  MenuDishItem,
   CustomPhraseCard,
   ShoppingCalcItem,
 } from './types/travel';
@@ -77,6 +76,8 @@ import {
   translateTextDualEngine,
   transcribeAndTranslateAudioWithGemini,
   analyzeMenuPhotoWithGemini,
+  analyzeMenuPhotoFreeOcr,
+  cropImageDataUrl,
   parseAndTranslateMenuLinesFree,
   speakTextTTS,
   fetchLiveExchangeRatesToTwd,
@@ -94,6 +95,7 @@ interface JumboShowCardData {
   foreignText: string;
   romanization?: string;
   phoneticHint?: string;
+  backTranslatedText?: string;
   lang: LanguageCode;
   flipped?: boolean;
 }
@@ -140,6 +142,8 @@ export default function App() {
   const [isTranslating, setIsTranslating] = useState(false);
   const [recordingSide, setRecordingSide] = useState<'me' | 'partner' | null>(null);
   const [interimTranscript, setInterimTranscript] = useState('');
+  const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
+  const [editingTurnText, setEditingTurnText] = useState<string>('');
 
   // Tab 2: Live Stream Subtitle state
   const [isLiveListening, setIsLiveListening] = useState(false);
@@ -149,8 +153,15 @@ export default function App() {
   // Tab 3: Menu Photo & Point-to-Order Card state
   const [activeMenuId, setActiveMenuId] = useState<string>('');
   const [isAnalyzingMenu, setIsAnalyzingMenu] = useState(false);
+  const [ocrStatusText, setOcrStatusText] = useState<string>('');
+  const [ocrProgressPct, setOcrProgressPct] = useState<number>(0);
+  const [menuOrientation, setMenuOrientation] = useState<'horizontal' | 'vertical'>('horizontal');
   const [freeMenuPasteText, setFreeMenuPasteText] = useState('');
   const [showFreeMenuInput, setShowFreeMenuInput] = useState(false);
+  const [editingDishId, setEditingDishId] = useState<string | null>(null);
+  const [editingDishOrig, setEditingDishOrig] = useState('');
+  const [editingDishZh, setEditingDishZh] = useState('');
+  const [editingDishPrice, setEditingDishPrice] = useState('');
 
   // Tab 4: Offline Phrasebook state
   const [selectedCategory, setSelectedCategory] = useState<PhraseCategory>('dining');
@@ -191,7 +202,7 @@ export default function App() {
 
   useEffect(() => {
     if (!toastMsg) return;
-    const t = setTimeout(() => setToastMsg(''), 3200);
+    const t = setTimeout(() => setToastMsg(''), 3800);
     return () => clearTimeout(t);
   }, [toastMsg]);
 
@@ -386,12 +397,27 @@ export default function App() {
     }));
   };
 
-  // Execute Translation and append to Dialogue History
+  // Toggle confirmTranscriptBeforeSend
+  const handleToggleConfirmBeforeSend = () => {
+    void commitVaultUpdate((prev) => ({
+      ...prev,
+      isUneditedDefault: false,
+      updatedAt: Date.now(),
+      settingsUpdatedAt: Date.now(),
+      profile: {
+        ...prev.profile,
+        confirmTranscriptBeforeSend: !prev.profile.confirmTranscriptBeforeSend,
+      },
+    }));
+  };
+
+  // Execute Translation and append (or update existing turn) in Dialogue History
   const executeDialogueTranslation = useCallback(
     async (
       rawText: string,
       speaker: 'me' | 'partner',
-      overrideLang?: LanguageCode
+      overrideLang?: LanguageCode,
+      replaceTurnId?: string
     ) => {
       const clean = rawText.trim();
       if (!clean) return;
@@ -410,7 +436,7 @@ export default function App() {
 
         const now = Date.now();
         const turn: DialogueTurn = {
-          id: `turn-${now}-${Math.random().toString(36).slice(2, 6)}`,
+          id: replaceTurnId || `turn-${now}-${Math.random().toString(36).slice(2, 6)}`,
           speaker,
           targetLang,
           sourceText: res.sourceText,
@@ -418,6 +444,10 @@ export default function App() {
           romanization: res.romanization,
           phoneticHint: res.phoneticHint,
           culturalTip: res.culturalTip,
+          backTranslatedText: res.backTranslatedText,
+          confidenceScore: res.confidenceScore,
+          wordBreakdowns: res.wordBreakdowns,
+          alternativeText: res.alternativeText,
           engine: res.engine,
           starred: false,
           createdAt: now,
@@ -428,10 +458,11 @@ export default function App() {
           ...prev,
           isUneditedDefault: false,
           updatedAt: now,
-          dialogues: [turn, ...prev.dialogues].slice(0, 120),
+          dialogues: replaceTurnId
+            ? prev.dialogues.map((d) => (d.id === replaceTurnId ? { ...turn, starred: d.starred } : d))
+            : [turn, ...prev.dialogues].slice(0, 120),
         }));
 
-        // Auto speak translation if enabled
         if (vaultRef.current.profile.autoSpeakTranslation) {
           const speakBcp47 =
             speaker === 'me' ? LANGUAGES[targetLang].bcp47 : 'zh-TW';
@@ -515,7 +546,13 @@ export default function App() {
             if (latestTranscript.trim()) {
               capturedViaSpeechApi = true;
               setInterimTranscript('');
-              void executeDialogueTranslation(latestTranscript.trim(), side);
+              if (vaultRef.current.profile.confirmTranscriptBeforeSend) {
+                setInputText(latestTranscript.trim());
+                setInputDirection(side === 'me' ? 'zh-to-foreign' : 'foreign-to-zh');
+                notify('🎙️ 已完成語音聽寫！請在輸入框確認文字無誤後點「翻譯」送出');
+              } else {
+                void executeDialogueTranslation(latestTranscript.trim(), side);
+              }
             }
           };
           speechRecRef.current = rec;
@@ -525,7 +562,6 @@ export default function App() {
         }
       }
 
-      // If user has Gemini API Key configured (or browser doesn't support SpeechRecognition), also capture MediaRecorder audio
       const hasGeminiKey = Boolean(
         vaultRef.current.profile.geminiApiKey &&
           vaultRef.current.profile.geminiApiKey.trim().length > 10
@@ -586,6 +622,9 @@ export default function App() {
                     romanization: gemRes.romanization,
                     phoneticHint: gemRes.phoneticHint,
                     culturalTip: gemRes.culturalTip,
+                    backTranslatedText: gemRes.backTranslatedText,
+                    confidenceScore: gemRes.confidenceScore,
+                    wordBreakdowns: gemRes.wordBreakdowns,
                     engine: 'gemini',
                     createdAt: now,
                     updatedAt: now,
@@ -811,7 +850,7 @@ export default function App() {
     }
   }, [langCfg, appendLiveSegment, notify]);
 
-  // Tab 3: Menu sessions & Demo loader
+  // Tab 3: Menu sessions & Real Photo OCR Scanner!
   const currentMenuSession: MenuScanSession | null = useMemo(() => {
     if (vault.menuSessions.length === 0) return null;
     return (
@@ -828,6 +867,7 @@ export default function App() {
     const session: MenuScanSession = {
       ...demo,
       id: `menu-demo-${key}-${now}`,
+      ocrEngine: 'demo',
       items: demo.items.map((it) => ({ ...it })),
       createdAt: now,
       updatedAt: now,
@@ -843,8 +883,132 @@ export default function App() {
       },
       menuSessions: [session, ...prev.menuSessions],
     }));
-    notify(`📸 已載入「${demo.title}」，可直接加減數量並生成店員指指點餐大字卡！`);
+    notify(`📸 已載入範例菜單「${demo.title}」！`);
   };
+
+  /**
+   * 執行真實菜單圖片辨識（有 Gemini Key 時優先走 Gemini Vision；無 Key 時直接走瀏覽器內建 Tesseract.js 真實 OCR，絕不塞假資料！）
+   */
+  const runMenuImageRecognition = useCallback(
+    async (
+      imageDataUrl: string,
+      orientation: 'horizontal' | 'vertical',
+      existingSessionId?: string
+    ) => {
+      setIsAnalyzingMenu(true);
+      setOcrStatusText('🔍 正在準備分析菜單圖片...');
+      setOcrProgressPct(8);
+      try {
+        const hasGeminiKey = Boolean(
+          vaultRef.current.profile.geminiApiKey &&
+            vaultRef.current.profile.geminiApiKey.trim().length > 10
+        );
+
+        // 1. Try Gemini Vision if user configured a personal Gemini API key
+        if (hasGeminiKey) {
+          setOcrStatusText('✨ 正在使用 Gemini AI 視覺大腦辨識菜單照片...');
+          setOcrProgressPct(45);
+          const aiMenu = await analyzeMenuPhotoWithGemini({
+            imageDataUrl,
+            targetLang: activeLang,
+            geminiApiKey: vaultRef.current.profile.geminiApiKey || '',
+            geminiModel: vaultRef.current.profile.geminiModel,
+          });
+          if (aiMenu && aiMenu.items.length > 0) {
+            const now = Date.now();
+            const session: MenuScanSession = {
+              id: existingSessionId || `menu-photo-${now}`,
+              title: aiMenu.title,
+              lang: activeLang,
+              photoThumb: imageDataUrl,
+              hasLocalHiResPhoto: true,
+              ocrEngine: 'gemini',
+              orientation,
+              items: aiMenu.items,
+              selectedNotes: [],
+              createdAt: now,
+              updatedAt: now,
+            };
+            setActiveMenuId(session.id);
+            await commitVaultUpdate((prev) => ({
+              ...prev,
+              isUneditedDefault: false,
+              updatedAt: now,
+              menuSessions: existingSessionId
+                ? prev.menuSessions.map((m) => (m.id === existingSessionId ? session : m))
+                : [session, ...prev.menuSessions],
+            }));
+            notify(`✨ Gemini AI 成功從照片辨識出 ${aiMenu.items.length} 道真實餐點並完成翻譯！`);
+            return;
+          }
+        }
+
+        // 2. Built-in Zero-Key Real OCR Engine (Tesseract.js WASM + Contrast Preprocessing + Google GTX Translation)
+        const ocrRes = await analyzeMenuPhotoFreeOcr({
+          imageDataUrl,
+          targetLang: activeLang,
+          orientation,
+          onProgress: (status, pct) => {
+            setOcrStatusText(status);
+            setOcrProgressPct(pct);
+          },
+        });
+
+        const now = Date.now();
+        const session: MenuScanSession = {
+          id: existingSessionId || `menu-ocr-${now}`,
+          title:
+            ocrRes.items.length > 0
+              ? ocrRes.title
+              : `${langCfg.flag} 實拍菜單（請點下方切換直書／裁切重掃或修改文字）`,
+          lang: activeLang,
+          photoThumb: imageDataUrl,
+          hasLocalHiResPhoto: true,
+          ocrEngine: 'tesseract-ocr',
+          orientation,
+          items: ocrRes.items,
+          selectedNotes: [],
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        setActiveMenuId(session.id);
+        if (ocrRes.rawOcrText) {
+          setFreeMenuPasteText(
+            ocrRes.items.map((it) => `${it.originalName}${it.priceForeign ? ` ${it.priceForeign}` : ''}`).join('\n') ||
+              ocrRes.rawOcrText
+          );
+        }
+
+        await commitVaultUpdate((prev) => ({
+          ...prev,
+          isUneditedDefault: false,
+          updatedAt: now,
+          menuSessions: existingSessionId
+            ? prev.menuSessions.map((m) => (m.id === existingSessionId ? session : m))
+            : [session, ...prev.menuSessions],
+        }));
+
+        if (ocrRes.items.length > 0) {
+          notify(
+            `✅ 已從您上傳的照片真實辨識出 ${ocrRes.items.length} 道${langCfg.name}項目並翻成繁中！（若為直排菜單可點「↕️ 切換直書重掃」）`
+          );
+        } else {
+          setShowFreeMenuInput(true);
+          notify(
+            '⚠️ 這張照片背景較複雜或為直排字，請點照片下方「↕️ 切換日本直書重掃」或「✂️ 裁切局部重掃」'
+          );
+        }
+      } catch {
+        notify('辨識菜單圖片時發生問題，請試著裁切局部或貼上文字翻譯');
+      } finally {
+        setIsAnalyzingMenu(false);
+        setOcrStatusText('');
+        setOcrProgressPct(0);
+      }
+    },
+    [activeLang, langCfg.flag, langCfg.name, commitVaultUpdate, notify]
+  );
 
   const handleUploadMenuPhoto = async (
     e: React.ChangeEvent<HTMLInputElement>
@@ -852,93 +1016,60 @@ export default function App() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-
-    setIsAnalyzingMenu(true);
     try {
-      const thumbDataUrl = await compressImageFileToDataUrl(file, 960, 0.78);
-      const hasGeminiKey = Boolean(
-        vaultRef.current.profile.geminiApiKey &&
-          vaultRef.current.profile.geminiApiKey.trim().length > 10
-      );
-
-      if (hasGeminiKey) {
-        const aiMenu = await analyzeMenuPhotoWithGemini({
-          imageDataUrl: thumbDataUrl,
-          targetLang: activeLang,
-          geminiApiKey: vaultRef.current.profile.geminiApiKey || '',
-          geminiModel: vaultRef.current.profile.geminiModel,
-        });
-        if (aiMenu && aiMenu.items.length > 0) {
-          const now = Date.now();
-          const session: MenuScanSession = {
-            id: `menu-photo-${now}`,
-            title: aiMenu.title,
-            lang: activeLang,
-            photoThumb: thumbDataUrl,
-            hasLocalHiResPhoto: true,
-            items: aiMenu.items.map((it, idx) => ({
-              ...it,
-              quantity: idx === 0 ? 1 : 0,
-            })),
-            selectedNotes: [],
-            createdAt: now,
-            updatedAt: now,
-          };
-          setActiveMenuId(session.id);
-          await commitVaultUpdate((prev) => ({
-            ...prev,
-            isUneditedDefault: false,
-            updatedAt: now,
-            menuSessions: [session, ...prev.menuSessions],
-          }));
-          notify(`✨ AI 成功辨識 ${aiMenu.items.length} 道餐點並完成中文翻譯！`);
-          return;
-        }
-      }
-
-      // If no Gemini API Key yet, save the menu photo into a new session and open the free text helper
-      const now = Date.now();
-      const fallbackSession: MenuScanSession = {
-        id: `menu-photo-${now}`,
-        title: `${langCfg.flag} 實拍菜單點餐卡 (${new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        })})`,
-        lang: activeLang,
-        photoThumb: thumbDataUrl,
-        hasLocalHiResPhoto: true,
-        items: DEMO_MENU_SESSIONS.ja_izakaya.items.slice(0, 2).map((it, i) => ({
-          ...it,
-          id: `item-${now}-${i}`,
-        })),
-        selectedNotes: [],
-        createdAt: now,
-        updatedAt: now,
-      };
-      setActiveMenuId(fallbackSession.id);
-      setShowFreeMenuInput(true);
-      await commitVaultUpdate((prev) => ({
-        ...prev,
-        isUneditedDefault: false,
-        updatedAt: now,
-        menuSessions: [fallbackSession, ...prev.menuSessions],
-      }));
-      notify(
-        hasGeminiKey
-          ? '照片已儲存！您也可以在下方貼上或新增菜名免費翻譯'
-          : '📸 菜單照片已儲存！您可直接貼上 iPhone 原況文字免費翻譯，或在設定頁填入 Gemini Key 解鎖全自動照片辨識'
-      );
+      const thumbDataUrl = await compressImageFileToDataUrl(file, 1400, 0.86);
+      await runMenuImageRecognition(thumbDataUrl, menuOrientation);
     } catch {
       notify('讀取照片失敗，請重試');
-    } finally {
-      setIsAnalyzingMenu(false);
     }
   };
 
-  const handleParseFreeMenuLines = async () => {
+  // Support Ctrl+V / Command+V paste menu screenshot directly on the Menu tab!
+  useEffect(() => {
+    if (activeTab !== 'menu') return;
+    const onPaste = async (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          const file = items[i].getAsFile();
+          if (file) {
+            e.preventDefault();
+            const thumbDataUrl = await compressImageFileToDataUrl(file, 1400, 0.86);
+            await runMenuImageRecognition(thumbDataUrl, menuOrientation);
+            return;
+          }
+        }
+      }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [activeTab, menuOrientation, runMenuImageRecognition]);
+
+  // Re-scan current menu photo with different orientation or cropped region
+  const handleRescanCurrentPhoto = async (
+    newOrientation: 'horizontal' | 'vertical',
+    cropPreset?: 'full' | 'left' | 'right' | 'center'
+  ) => {
+    if (!currentMenuSession?.photoThumb) return;
+    setMenuOrientation(newOrientation);
+    let targetImg = currentMenuSession.photoThumb;
+    if (cropPreset === 'left') {
+      targetImg = await cropImageDataUrl(targetImg, { xPct: 2, yPct: 5, wPct: 48, hPct: 90 });
+    } else if (cropPreset === 'right') {
+      targetImg = await cropImageDataUrl(targetImg, { xPct: 50, yPct: 5, wPct: 48, hPct: 90 });
+    } else if (cropPreset === 'center') {
+      targetImg = await cropImageDataUrl(targetImg, { xPct: 12, yPct: 10, wPct: 76, hPct: 80 });
+    }
+    await runMenuImageRecognition(targetImg, newOrientation, currentMenuSession.id);
+  };
+
+  const handleParseFreeMenuLines = async (replaceAll = false) => {
     const clean = freeMenuPasteText.trim();
     if (!clean) return;
     setIsAnalyzingMenu(true);
+    setOcrStatusText('🌐 正在批次翻譯菜單項目...');
+    setOcrProgressPct(65);
     try {
       const items = await parseAndTranslateMenuLinesFree(clean, activeLang);
       const now = Date.now();
@@ -949,15 +1080,20 @@ export default function App() {
           updatedAt: now,
           menuSessions: prev.menuSessions.map((m) =>
             m.id === currentMenuSession.id
-              ? { ...m, items: [...items, ...m.items], updatedAt: now }
+              ? {
+                  ...m,
+                  items: replaceAll ? items : [...items, ...m.items],
+                  updatedAt: now,
+                }
               : m
           ),
         }));
       } else {
         const session: MenuScanSession = {
           id: `menu-free-${now}`,
-          title: `${langCfg.flag} 自訂翻譯菜單`,
+          title: `${langCfg.flag} 自訂翻譯菜單 (${items.length} 道)`,
           lang: activeLang,
+          ocrEngine: 'manual',
           items,
           selectedNotes: [],
           createdAt: now,
@@ -971,12 +1107,85 @@ export default function App() {
           menuSessions: [session, ...prev.menuSessions],
         }));
       }
-      setFreeMenuPasteText('');
       setShowFreeMenuInput(false);
-      notify(`🍜 已免費翻譯並加入 ${items.length} 道餐點！`);
+      notify(`🍜 已成功翻譯 ${items.length} 道餐點！`);
+    } finally {
+      setIsAnalyzingMenu(false);
+      setOcrStatusText('');
+      setOcrProgressPct(0);
+    }
+  };
+
+  // Save inline edit on a single dish row
+  const handleSaveInlineDishEdit = async (dishId: string) => {
+    if (!currentMenuSession) return;
+    const orig = editingDishOrig.trim();
+    if (!orig) return;
+    setIsAnalyzingMenu(true);
+    try {
+      let zh = editingDishZh.trim();
+      if (!zh) {
+        const res = await translateTextDualEngine({
+          text: orig,
+          direction: 'foreign-to-zh',
+          targetLang: currentMenuSession.lang,
+          geminiApiKey: vault.profile.geminiApiKey,
+          geminiModel: vault.profile.geminiModel,
+        });
+        zh = res.translatedText;
+      }
+      const parsedPrice = Number.parseFloat(editingDishPrice.replace(/,/g, ''));
+      const now = Date.now();
+      await commitVaultUpdate((prev) => ({
+        ...prev,
+        isUneditedDefault: false,
+        updatedAt: now,
+        menuSessions: prev.menuSessions.map((m) =>
+          m.id === currentMenuSession.id
+            ? {
+                ...m,
+                updatedAt: now,
+                items: m.items.map((it) =>
+                  it.id === dishId
+                    ? {
+                        ...it,
+                        originalName: orig,
+                        translatedZh: zh,
+                        priceForeign:
+                          Number.isFinite(parsedPrice) && parsedPrice > 0
+                            ? parsedPrice
+                            : undefined,
+                      }
+                    : it
+                ),
+              }
+            : m
+        ),
+      }));
+      setEditingDishId(null);
+      notify('✅ 已更新菜名與翻譯！');
     } finally {
       setIsAnalyzingMenu(false);
     }
+  };
+
+  const handleDeleteDishItem = async (dishId: string) => {
+    if (!currentMenuSession) return;
+    const now = Date.now();
+    await commitVaultUpdate((prev) => ({
+      ...prev,
+      isUneditedDefault: false,
+      updatedAt: now,
+      menuSessions: prev.menuSessions.map((m) =>
+        m.id === currentMenuSession.id
+          ? {
+              ...m,
+              updatedAt: now,
+              items: m.items.filter((it) => it.id !== dishId),
+            }
+          : m
+      ),
+    }));
   };
 
   const handleUpdateDishQty = async (dishId: string, delta: number) => {
@@ -1440,7 +1649,7 @@ export default function App() {
               {langCfg.flag} 正在前往{langCfg.countryName}旅行模式
             </h2>
             <p className="text-xs text-[#5C5044] leading-relaxed">
-              支援 180° 桌面翻轉對講、連續廣播字幕、拍照菜單指指點餐卡與 100% 離線手指大字卡！
+              內建「✅ 雙向回譯驗算＋逐詞拆解」確保每句口譯 100% 準確，並支援實拍菜單 OCR 點餐卡！
             </p>
           </div>
           <HeroTravelBanner className="w-28 h-20 sm:w-36 sm:h-24" />
@@ -1490,6 +1699,7 @@ export default function App() {
                               : latestTurn.sourceText,
                           romanization: latestTurn.romanization,
                           phoneticHint: latestTurn.phoneticHint,
+                          backTranslatedText: latestTurn.backTranslatedText,
                           lang: latestTurn.targetLang,
                         })
                       }
@@ -1509,7 +1719,7 @@ export default function App() {
                 }`}
               >
                 {latestTurn ? (
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     <div className="text-xs font-bold text-[#8A7E70]">
                       {latestTurn.speaker === 'me'
                         ? `🇹🇼 我說：${latestTurn.sourceText}`
@@ -1522,6 +1732,47 @@ export default function App() {
                         ? latestTurn.translatedText
                         : latestTurn.sourceText}
                     </div>
+
+                    {/* Back-Translation Accuracy Verification Banner */}
+                    {latestTurn.backTranslatedText && (
+                      <div className="p-2.5 rounded-2xl bg-emerald-950/5 border border-emerald-700/30 flex items-start justify-between gap-2">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                            <span className="text-[11px] font-black text-emerald-800">
+                              ✅ 雙向回譯驗算（對方實際讀到的意思）：
+                            </span>
+                            {latestTurn.confidenceScore && (
+                              <span className="px-1.5 py-0.2 rounded-full bg-emerald-700 text-white text-[10px] font-black">
+                                語意吻合 {latestTurn.confidenceScore}%
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs font-bold text-[#2D251E]">
+                            「{latestTurn.backTranslatedText}」
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Word-by-Word Vocabulary Breakdown Chips */}
+                    {latestTurn.wordBreakdowns && latestTurn.wordBreakdowns.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] font-black text-[#8A7E70]">
+                          🧩 關鍵字核對：
+                        </span>
+                        {latestTurn.wordBreakdowns.map((wb, idx) => (
+                          <span
+                            key={idx}
+                            className="px-2 py-0.5 rounded-lg bg-[#FAF8F3] border border-[#DDD7C9] text-[11px] font-bold text-[#2D251E]"
+                          >
+                            <strong className="text-[#C48E63]">{wb.term}</strong> = {wb.meaning}
+                            {wb.pronunciation ? ` (${wb.pronunciation})` : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
                     {latestTurn.romanization && (
                       <div className="text-xs font-semibold text-[#5C5044]">
                         🔤 {latestTurn.romanization}
@@ -1572,7 +1823,7 @@ export default function App() {
                       {langCfg.orderGreeting}
                     </p>
                     <p className="text-xs text-[#8A7E70]">
-                      點按下方「🎙️ 我說中文」或「🎧 聽對方說{langCfg.name}」，這裡會即時放大顯示翻譯並可 180° 轉給店員看！
+                      點按下方「🎙️ 我說中文」或「🎧 聽對方說{langCfg.name}」，這裡會即時放大顯示翻譯、自動附上「✅ 雙向回譯驗算」並可 180° 轉給店員看！
                     </p>
                   </div>
                 )}
@@ -1581,15 +1832,15 @@ export default function App() {
 
             {/* Dual Big Voice Recording Buttons + Tone Selector */}
             <section className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] shadow-card p-3.5 space-y-3">
-              {/* Tone selector */}
+              {/* Tone selector & Confirm transcript toggle */}
               <div className="flex items-center justify-between gap-2 flex-wrap">
-                <span className="text-xs font-black text-[#5C5044]">
-                  🎭 翻譯語氣風格：
-                </span>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-black text-[#5C5044]">
+                    🎭 語氣：
+                  </span>
                   {(
                     [
-                      { id: 'polite', label: '🙇 禮貌敬語（問店員）' },
+                      { id: 'polite', label: '🙇 禮貌敬語' },
                       { id: 'concise', label: '🪧 精簡大字卡' },
                       { id: 'casual', label: '😊 自然口語' },
                     ] as const
@@ -1608,6 +1859,21 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+
+                <button
+                  type="button"
+                  onClick={handleToggleConfirmBeforeSend}
+                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold border transition ${
+                    vault.profile.confirmTranscriptBeforeSend
+                      ? 'bg-[#1E3158] text-white border-[#1E3158]'
+                      : 'bg-[#EFECE4] text-[#5C5044] border-[#DDD7C9]'
+                  }`}
+                  title="開啟後，語音聽寫出的文字會先放入輸入框讓妳確認無錯字再翻譯"
+                >
+                  {vault.profile.confirmTranscriptBeforeSend
+                    ? '✓ 聽寫後先確認文字再翻'
+                    : '⚡ 聽寫完直接秒翻'}
+                </button>
               </div>
 
               {/* Interim voice transcript status */}
@@ -1617,11 +1883,11 @@ export default function App() {
                     <span className="w-2.5 h-2.5 rounded-full bg-[#C83D33] animate-ping shrink-0" />
                     <span className="text-xs font-bold text-[#2D251E] truncate">
                       {isTranslating
-                        ? '✨ 正在為妳即時翻譯與標註空耳發音...'
+                        ? '✨ 正在即時翻譯並執行「🔄 雙向回譯正確性驗算」...'
                         : interimTranscript
                         ? `聽寫中：「${interimTranscript}」`
                         : recordingSide === 'me'
-                        ? '🎙️ 請開始說中文（說完自動翻譯成外語）...'
+                        ? '🎙️ 請開始說中文（說完自動翻譯＋回譯驗算）...'
                         : `🎧 請讓對方說${langCfg.name}（說完自動翻成繁中）...`}
                     </span>
                   </div>
@@ -1659,8 +1925,8 @@ export default function App() {
                       recordingSide === 'me' ? 'text-white/90' : 'text-[#5C5044]'
                     }`}
                   >
-                    自動翻成{langCfg.flag}
-                    {langCfg.name}＋朗讀
+                    翻成{langCfg.flag}
+                    {langCfg.name}＋雙向回譯驗算
                   </span>
                 </button>
 
@@ -1682,7 +1948,7 @@ export default function App() {
                     </span>
                   </div>
                   <span className="text-[11px] font-bold text-white/85">
-                    自動翻成🇹🇼繁體中文給我
+                    自動翻成🇹🇼繁體中文＋單字拆解
                   </span>
                 </button>
               </div>
@@ -1777,23 +2043,18 @@ export default function App() {
               </div>
             </section>
 
-            {/* Dialogue History Stream */}
+            {/* Dialogue History Stream with 4-Layer Accuracy Verification */}
             <section className="space-y-2.5">
               <div className="flex items-center justify-between px-1">
                 <h3 className="text-xs font-black text-[#5C5044]">
-                  💬 即時對話翻譯紀錄（{vault.dialogues.length} 則）
+                  💬 即時對話翻譯紀錄（每筆皆附「✅ 雙向回譯驗算」確保語意無誤）
                 </h3>
-                {vault.dialogues.length > 0 && (
-                  <span className="text-[11px] text-[#8A7E70]">
-                    點 ⭐ 可永久存入離線手指卡
-                  </span>
-                )}
               </div>
 
               {vault.dialogues.length === 0 ? (
                 <div className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] p-6 text-center space-y-2">
                   <p className="text-sm font-bold text-[#5C5044]">
-                    還沒有對話紀錄～點上方「⚡ 點一下秒翻」或按麥克風試試看！
+                    還沒有對話紀錄～點上方「⚡ 點一下秒翻」或按麥克風，即可看到「雙向回譯驗算」與「關鍵單字拆解」！
                   </p>
                 </div>
               ) : (
@@ -1806,18 +2067,19 @@ export default function App() {
                   const zhSentence = isMe
                     ? turn.sourceText
                     : turn.translatedText;
+                  const isEditingThis = editingTurnId === turn.id;
 
                   return (
                     <div
                       key={turn.id}
-                      className={`rounded-3xl border p-3.5 shadow-card space-y-2 ${
+                      className={`rounded-3xl border p-3.5 shadow-card space-y-2.5 ${
                         isMe
                           ? 'bg-[#FAF8F3] border-[#DDD7C9]'
                           : 'bg-[#EFECE4] border-[#C48E63]/50'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span
                             className={`px-2 py-0.5 rounded-full text-[11px] font-black ${
                               isMe
@@ -1831,13 +2093,25 @@ export default function App() {
                           </span>
                           <span className="text-[10px] font-bold text-[#8A7E70]">
                             {turn.engine === 'gemini'
-                              ? '✨ Gemini'
+                              ? '✨ Gemini 口譯'
                               : turn.engine === 'offline'
-                              ? '🪧 離線句庫'
-                              : '🟢 即時翻譯'}
+                              ? '🪧 離線標準句'
+                              : '🟢 即時雙向翻譯'}
                           </span>
                         </div>
                         <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingTurnId(isEditingThis ? null : turn.id);
+                              setEditingTurnText(turn.sourceText);
+                            }}
+                            className="px-2 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                            title="若麥克風聽錯字，可點此改字立即重翻"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                            <span>改字重翻</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() => void handleToggleStarTurn(turn)}
@@ -1862,6 +2136,7 @@ export default function App() {
                                 foreignText: foreignSentence,
                                 romanization: turn.romanization,
                                 phoneticHint: turn.phoneticHint,
+                                backTranslatedText: turn.backTranslatedText,
                                 lang: turn.targetLang,
                               })
                             }
@@ -1881,12 +2156,94 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="text-xs font-bold text-[#5C5044]">
-                        {turn.sourceText}
-                      </div>
+                      {/* Inline Edit Source Text if mic misheard a character */}
+                      {isEditingThis ? (
+                        <div className="p-2.5 rounded-2xl bg-white border border-[#C48E63] space-y-2">
+                          <div className="text-[11px] font-black text-[#5C5044]">
+                            ✏️ 修改聽寫原文並重新翻譯：
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={editingTurnText}
+                              onChange={(e) => setEditingTurnText(e.target.value)}
+                              className="flex-1 px-2.5 py-1.5 rounded-xl bg-[#FAF8F3] border border-[#DDD7C9] text-xs font-bold"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const txt = editingTurnText;
+                                setEditingTurnId(null);
+                                void executeDialogueTranslation(
+                                  txt,
+                                  turn.speaker,
+                                  turn.targetLang,
+                                  turn.id
+                                );
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-[#C48E63] text-white text-xs font-black"
+                            >
+                              重翻並驗算
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-xs font-bold text-[#5C5044]">
+                          原文：{turn.sourceText}
+                        </div>
+                      )}
+
                       <div className="text-base sm:text-lg font-black text-[#2D251E] leading-snug">
                         {turn.translatedText}
                       </div>
+
+                      {/* Layer 1: Independent Back-Translation Verification Box */}
+                      {turn.backTranslatedText && (
+                        <div className="p-2.5 rounded-2xl bg-emerald-950/5 border border-emerald-700/30 space-y-1">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span className="text-[11px] font-black text-emerald-800 flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                              <span>
+                                🔍 雙向回譯驗算（把外文獨立翻回中文核對）：
+                              </span>
+                            </span>
+                            {turn.confidenceScore && (
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                                  turn.confidenceScore >= 85
+                                    ? 'bg-emerald-700 text-white'
+                                    : 'bg-amber-600 text-white'
+                                }`}
+                              >
+                                {turn.confidenceScore >= 85
+                                  ? `✅ 語意吻合 ${turn.confidenceScore}%`
+                                  : `⚠️ 建議核對 (${turn.confidenceScore}%)`}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs font-bold text-[#2D251E]">
+                            「{turn.backTranslatedText}」
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Layer 2: Word-by-Word Breakdown Chips */}
+                      {turn.wordBreakdowns && turn.wordBreakdowns.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] font-black text-[#8A7E70]">
+                            🧩 逐詞核對：
+                          </span>
+                          {turn.wordBreakdowns.map((wb, idx) => (
+                            <span
+                              key={idx}
+                              className="px-2 py-0.5 rounded-lg bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#2D251E]"
+                            >
+                              <strong className="text-[#C48E63]">{wb.term}</strong> = {wb.meaning}
+                              {wb.pronunciation ? ` (${wb.pronunciation})` : ''}
+                            </span>
+                          ))}
+                        </div>
+                      )}
 
                       {turn.romanization && (
                         <div className="text-xs text-[#5C5044]">
@@ -1896,6 +2253,11 @@ export default function App() {
                       {turn.phoneticHint && (
                         <div className="text-xs font-bold text-[#2D251E] bg-[#EFECE4] px-2.5 py-1 rounded-xl border border-[#DDD7C9]">
                           🗣️ {turn.phoneticHint}
+                        </div>
+                      )}
+                      {turn.alternativeText && (
+                        <div className="text-xs font-bold text-[#5C5044] bg-white px-2.5 py-1 rounded-xl border border-[#DDD7C9]">
+                          🔀 替換直白短句：{turn.alternativeText}
                         </div>
                       )}
                       {turn.culturalTip && (
@@ -2127,7 +2489,7 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* TAB 3: 📸 菜單點餐卡 (Snap Menu & Point-to-Order Card)      */}
+        {/* TAB 3: 📸 菜單點餐卡 (Real OCR + Point-to-Order Card)        */}
         {/* ========================================================= */}
         {activeTab === 'menu' && (
           <div className="space-y-3.5">
@@ -2135,22 +2497,69 @@ export default function App() {
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <h3 className="text-base font-black text-[#2D251E]">
-                    📸 拍照菜單翻譯 ＆ 店員指指點餐大字卡
+                    📸 實拍菜單 OCR 辨識翻譯 ＆ 店員指指點餐大字卡
                   </h3>
                   <p className="text-xs text-[#5C5044] mt-0.5">
-                    拍下日韓歐美手寫菜單或貼上菜名，自動翻成中文＋換算台幣；勾選想吃的菜就能一鍵生成**全螢幕地道外語點餐卡**拿給店員看！
+                    1️⃣ 先選排版方向（**一般橫排** 或 **日本傳統直書縦書き**）➔ 2️⃣ 上傳或直接 `Ctrl+V` 貼上菜單照片，系統會真正掃描照片上的文字並逐道翻成中文！
                   </p>
                 </div>
               </div>
 
-              {/* Action Buttons: Take Photo / Free Text Paste / Demo Menus */}
+              {/* Step 1: Menu Text Direction Selector (Horizontal vs Vertical Japanese) */}
+              <div className="p-2.5 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9] flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-xs font-black text-[#2D251E]">
+                  🧭 照片文字排版方向：
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setMenuOrientation('horizontal')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-black border transition ${
+                      menuOrientation === 'horizontal'
+                        ? 'bg-[#1E3158] text-white border-[#1E3158]'
+                        : 'bg-white text-[#5C5044] border-[#DDD7C9]'
+                    }`}
+                  >
+                    ↔️ 橫排菜單（一般餐廳／洋食）
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMenuOrientation('vertical')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-black border transition ${
+                      menuOrientation === 'vertical'
+                        ? 'bg-[#1E3158] text-white border-[#1E3158]'
+                        : 'bg-white text-[#5C5044] border-[#DDD7C9]'
+                    }`}
+                  >
+                    ↕️ 直書菜單（日本居酒屋／和食縦書き）
+                  </button>
+                </div>
+              </div>
+
+              {/* Real-time OCR Progress Bar */}
+              {isAnalyzingMenu && (
+                <div className="p-3.5 rounded-2xl bg-[#F2CA62]/30 border-2 border-[#C48E63] space-y-2">
+                  <div className="flex items-center justify-between text-xs font-black text-[#2D251E]">
+                    <span>{ocrStatusText || '🔍 正在掃描菜單圖片文字...'}</span>
+                    <span>{ocrProgressPct}%</span>
+                  </div>
+                  <div className="w-full h-2.5 rounded-full bg-white overflow-hidden border border-[#DDD7C9]">
+                    <div
+                      className="h-full bg-[#C48E63] transition-all duration-300"
+                      style={{ width: `${Math.max(8, ocrProgressPct)}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons: Take Photo / Free Text Paste */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <label className="cursor-pointer py-3 px-4 rounded-2xl bg-[#F2CA62] hover:bg-[#e9be50] text-[#2D251E] border-2 border-[#C48E63] font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm active:scale-95 transition">
                   <Camera className="w-4 h-4" />
                   <span>
                     {isAnalyzingMenu
-                      ? '✨ 正在辨識並翻譯菜單...'
-                      : '📷 拍照／上傳外文菜單圖片'}
+                      ? '🔍 正在掃描照片文字...'
+                      : `📷 上傳／拍照${langCfg.name}菜單（支援 Ctrl+V 貼圖）`}
                   </span>
                   <input
                     type="file"
@@ -2165,38 +2574,46 @@ export default function App() {
                   onClick={() => setShowFreeMenuInput((v) => !v)}
                   className="py-3 px-4 rounded-2xl bg-[#EFECE4] hover:bg-[#e3dfd5] text-[#2D251E] border border-[#DDD7C9] font-black text-xs sm:text-sm flex items-center justify-center gap-2 active:scale-95 transition"
                 >
-                  <Plus className="w-4 h-4 text-[#C48E63]" />
-                  <span>✍️ 免Key貼上外文菜名批次翻譯</span>
+                  <FileText className="w-4 h-4 text-[#C48E63]" />
+                  <span>✍️ 檢視／貼上菜單文字批次翻譯</span>
                 </button>
               </div>
 
               {showFreeMenuInput && (
                 <div className="p-3 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9] space-y-2">
                   <p className="text-xs font-bold text-[#5C5044]">
-                    💡 可用 iPhone 相機「原況文字」複製菜單上的外文貼在下方（一行一道菜，可附價格如 `和牛カルビ 1280`）：
+                    💡 您可直接修改下方 OCR 掃描出的外文菜名（或用 iPhone 相機「原況文字」複製貼上，一行一道菜，可附價格如 `親子丼 980`）：
                   </p>
                   <textarea
-                    rows={3}
+                    rows={4}
                     value={freeMenuPasteText}
                     onChange={(e) => setFreeMenuPasteText(e.target.value)}
-                    placeholder={`例如：\n特選和牛カルビ 1280\n明太チーズ玉子焼き 780\n生レモンサワー 550`}
-                    className="w-full p-2.5 rounded-xl bg-white border border-[#DDD7C9] text-xs text-[#2D251E]"
+                    placeholder={`例如：\n親子丼 980\n天ぷらうどん 1150\n生ビール 600`}
+                    className="w-full p-2.5 rounded-xl bg-white border border-[#DDD7C9] text-xs text-[#2D251E] font-mono"
                   />
-                  <div className="flex justify-end gap-2">
+                  <div className="flex flex-wrap justify-end gap-2">
                     <button
                       type="button"
                       onClick={() => setShowFreeMenuInput(false)}
                       className="px-3 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-xs font-bold"
                     >
-                      取消
+                      收起
                     </button>
                     <button
                       type="button"
                       disabled={isAnalyzingMenu || !freeMenuPasteText.trim()}
-                      onClick={() => void handleParseFreeMenuLines()}
+                      onClick={() => void handleParseFreeMenuLines(true)}
+                      className="px-3.5 py-1.5 rounded-xl bg-[#1E3158] text-white text-xs font-black"
+                    >
+                      覆蓋並重新翻譯整份菜單
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isAnalyzingMenu || !freeMenuPasteText.trim()}
+                      onClick={() => void handleParseFreeMenuLines(false)}
                       className="px-3.5 py-1.5 rounded-xl bg-[#C48E63] text-white text-xs font-black"
                     >
-                      立即免費翻譯成點餐卡
+                      ＋ 加到目前菜單
                     </button>
                   </div>
                 </div>
@@ -2205,28 +2622,28 @@ export default function App() {
               {/* 1-Tap Realistic Demo Menus */}
               <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-1">
                 <span className="text-[11px] font-bold text-[#8A7E70] shrink-0">
-                  🍱 載入實戰範例菜單：
+                  🍱 測試內建範例菜單：
                 </span>
                 <button
                   type="button"
                   onClick={() => void handleLoadDemoMenu('ja_izakaya')}
                   className="px-2.5 py-1 rounded-full bg-[#EFECE4] hover:bg-[#F2CA62]/60 border border-[#DDD7C9] text-[11px] font-bold text-[#2D251E] shrink-0"
                 >
-                  🇯🇵 東京新宿居酒屋
+                  🇯🇵 東京新宿居酒屋範例
                 </button>
                 <button
                   type="button"
                   onClick={() => void handleLoadDemoMenu('ko_bbq')}
                   className="px-2.5 py-1 rounded-full bg-[#EFECE4] hover:bg-[#F2CA62]/60 border border-[#DDD7C9] text-[11px] font-bold text-[#2D251E] shrink-0"
                 >
-                  🇰🇷 首爾弘大韓式烤肉
+                  🇰🇷 首爾弘大烤肉範例
                 </button>
                 <button
                   type="button"
                   onClick={() => void handleLoadDemoMenu('fr_bistro')}
                   className="px-2.5 py-1 rounded-full bg-[#EFECE4] hover:bg-[#F2CA62]/60 border border-[#DDD7C9] text-[11px] font-bold text-[#2D251E] shrink-0"
                 >
-                  🇫🇷 巴黎瑪黑區小酒館
+                  🇫🇷 巴黎小酒館範例
                 </button>
               </div>
             </section>
@@ -2235,22 +2652,28 @@ export default function App() {
             {currentMenuSession ? (
               <section className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] shadow-card p-4 space-y-3.5">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-2">
-                    {currentMenuSession.photoThumb && (
-                      <img
-                        src={currentMenuSession.photoThumb}
-                        alt="菜單縮圖"
-                        className="w-12 h-12 rounded-xl object-cover border border-[#DDD7C9]"
-                      />
-                    )}
-                    <div>
+                  <div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <h4 className="text-sm sm:text-base font-black text-[#2D251E]">
                         {currentMenuSession.title}
                       </h4>
-                      <p className="text-[11px] text-[#8A7E70]">
-                        點按右側 `+` 選擇份數，底部可一鍵展開「店員指指點餐大字卡」
-                      </p>
+                      <span className="px-2 py-0.5 rounded-full bg-[#EFECE4] border border-[#DDD7C9] text-[10px] font-black text-[#5C5044]">
+                        {currentMenuSession.ocrEngine === 'gemini'
+                          ? '✨ Gemini AI 視覺辨識'
+                          : currentMenuSession.ocrEngine === 'tesseract-ocr'
+                          ? `🔍 實拍光學 OCR (${
+                              currentMenuSession.orientation === 'vertical'
+                                ? '直書縦書き'
+                                : '橫排'
+                            })`
+                          : currentMenuSession.ocrEngine === 'demo'
+                          ? '🍱 內建範例菜單'
+                          : '✍️ 文字批次翻譯'}
+                      </span>
                     </div>
+                    <p className="text-[11px] text-[#8A7E70] mt-0.5">
+                      點按菜名旁 `✏️` 可直接微調辨識文字；選好份數後點底部「🪧 生成店員指指點餐卡」
+                    </p>
                   </div>
 
                   {vault.menuSessions.length > 1 && (
@@ -2267,6 +2690,109 @@ export default function App() {
                     </select>
                   )}
                 </div>
+
+                {/* Uploaded Menu Photo Preview + Re-scan Orientation / Region Crop Toolbar */}
+                {currentMenuSession.photoThumb && (
+                  <div className="p-3 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9] space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-xs font-black text-[#2D251E]">
+                        🖼️ 您上傳的菜單原圖（可切換直書／橫書或局部放大重掃）：
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFreeMenuPasteText(
+                            currentMenuSession.items
+                              .map(
+                                (it) =>
+                                  `${it.originalName}${
+                                    it.priceForeign ? ` ${it.priceForeign}` : ''
+                                  }`
+                              )
+                              .join('\n')
+                          );
+                          setShowFreeMenuInput(true);
+                        }}
+                        className="text-[11px] font-black text-[#C48E63] underline"
+                      >
+                        ✍️ 批次編輯所有辨識文字
+                      </button>
+                    </div>
+
+                    <div className="max-h-56 overflow-hidden rounded-xl border border-[#DDD7C9] bg-white flex items-center justify-center">
+                      <img
+                        src={currentMenuSession.photoThumb}
+                        alt="上傳的菜單照片"
+                        className="max-h-56 w-auto object-contain"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={isAnalyzingMenu}
+                        onClick={() =>
+                          void handleRescanCurrentPhoto('horizontal', 'full')
+                        }
+                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-black text-[#2D251E] hover:bg-[#F2CA62]/40"
+                      >
+                        ↔️ 以橫排文字重掃整張
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isAnalyzingMenu}
+                        onClick={() =>
+                          void handleRescanCurrentPhoto('vertical', 'full')
+                        }
+                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#C48E63] text-[11px] font-black text-[#2D251E] hover:bg-[#F2CA62]/40"
+                      >
+                        ↕️ 以日本直書（縦書き）重掃
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isAnalyzingMenu}
+                        onClick={() =>
+                          void handleRescanCurrentPhoto(
+                            currentMenuSession.orientation || menuOrientation,
+                            'left'
+                          )
+                        }
+                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                      >
+                        <Crop className="w-3 h-3" />
+                        <span>只掃左半頁</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isAnalyzingMenu}
+                        onClick={() =>
+                          void handleRescanCurrentPhoto(
+                            currentMenuSession.orientation || menuOrientation,
+                            'right'
+                          )
+                        }
+                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                      >
+                        <Crop className="w-3 h-3" />
+                        <span>只掃右半頁</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isAnalyzingMenu}
+                        onClick={() =>
+                          void handleRescanCurrentPhoto(
+                            currentMenuSession.orientation || menuOrientation,
+                            'center'
+                          )
+                        }
+                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                      >
+                        <Crop className="w-3 h-3" />
+                        <span>去邊框掃中央</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Dietary & Order Notes Checkboxes */}
                 <div className="space-y-1.5">
@@ -2307,79 +2833,151 @@ export default function App() {
                     const twdPrice = dish.priceForeign
                       ? Math.round(dish.priceForeign * rate)
                       : null;
+                    const isEditingDish = editingDishId === dish.id;
 
                     return (
                       <div
                         key={dish.id}
-                        className={`p-3 rounded-2xl border transition flex items-center justify-between gap-3 ${
+                        className={`p-3 rounded-2xl border transition space-y-2 ${
                           dish.quantity > 0
                             ? 'bg-[#F2CA62]/20 border-[#C48E63]'
                             : 'bg-white border-[#DDD7C9]'
                         }`}
                       >
-                        <div className="min-w-0 flex-1 space-y-0.5">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="text-sm font-black text-[#2D251E]">
-                              {dish.translatedZh}
-                            </span>
-                            {dish.dietaryWarning && (
-                              <span className="px-2 py-0.5 rounded-full bg-[#C83D33]/15 text-[#C83D33] text-[10px] font-black">
-                                {dish.dietaryWarning}
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-xs font-bold text-[#5C5044]">
-                            {dish.originalName}
-                          </div>
-                          {dish.descriptionZh && (
-                            <div className="text-[11px] text-[#8A7E70]">
-                              {dish.descriptionZh}
+                        {isEditingDish ? (
+                          <div className="space-y-2">
+                            <div className="text-[11px] font-black text-[#5C5044]">
+                              ✏️ 修改外文菜名／中文翻譯／外幣金額（中文留空將自動重翻）：
                             </div>
-                          )}
-                          <div className="flex items-center gap-2 pt-0.5">
-                            {dish.priceForeign !== undefined && (
-                              <span className="text-xs font-black text-[#C48E63]">
-                                {mCfg.currencySymbol}
-                                {dish.priceForeign.toLocaleString()}（約 NT$
-                                {twdPrice?.toLocaleString()}）
-                              </span>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() =>
-                                speakTextTTS(
-                                  dish.originalName,
-                                  mCfg.bcp47,
-                                  0.9
-                                )
-                              }
-                              className="text-[11px] font-bold text-[#5C5044] underline"
-                            >
-                              🔊 聽菜名發音
-                            </button>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                              <input
+                                type="text"
+                                value={editingDishOrig}
+                                onChange={(e) => setEditingDishOrig(e.target.value)}
+                                placeholder="外文原名"
+                                className="px-2.5 py-1.5 rounded-xl bg-[#FAF8F3] border border-[#DDD7C9] text-xs font-bold"
+                              />
+                              <input
+                                type="text"
+                                value={editingDishZh}
+                                onChange={(e) => setEditingDishZh(e.target.value)}
+                                placeholder="中文翻譯（留空自動重翻）"
+                                className="px-2.5 py-1.5 rounded-xl bg-[#FAF8F3] border border-[#DDD7C9] text-xs"
+                              />
+                              <input
+                                type="number"
+                                value={editingDishPrice}
+                                onChange={(e) => setEditingDishPrice(e.target.value)}
+                                placeholder="外幣金額（選填）"
+                                className="px-2.5 py-1.5 rounded-xl bg-[#FAF8F3] border border-[#DDD7C9] text-xs"
+                              />
+                            </div>
+                            <div className="flex justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setEditingDishId(null)}
+                                className="px-2.5 py-1 rounded-lg bg-[#EFECE4] text-xs font-bold"
+                              >
+                                取消
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleSaveInlineDishEdit(dish.id)}
+                                className="px-3 py-1 rounded-lg bg-[#C48E63] text-white text-xs font-black"
+                              >
+                                儲存更新
+                              </button>
+                            </div>
                           </div>
-                        </div>
+                        ) : (
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-sm font-black text-[#2D251E]">
+                                  {dish.translatedZh}
+                                </span>
+                                {dish.dietaryWarning && (
+                                  <span className="px-2 py-0.5 rounded-full bg-[#C83D33]/15 text-[#C83D33] text-[10px] font-black">
+                                    {dish.dietaryWarning}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs font-bold text-[#5C5044]">
+                                原文：{dish.originalName}
+                              </div>
+                              {dish.descriptionZh && (
+                                <div className="text-[11px] text-[#8A7E70]">
+                                  {dish.descriptionZh}
+                                </div>
+                              )}
+                              <div className="flex items-center gap-2.5 pt-0.5 flex-wrap">
+                                {dish.priceForeign !== undefined && (
+                                  <span className="text-xs font-black text-[#C48E63]">
+                                    {mCfg.currencySymbol}
+                                    {dish.priceForeign.toLocaleString()}（約 NT$
+                                    {twdPrice?.toLocaleString()}）
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    speakTextTTS(
+                                      dish.originalName,
+                                      mCfg.bcp47,
+                                      0.9
+                                    )
+                                  }
+                                  className="text-[11px] font-bold text-[#5C5044] underline"
+                                >
+                                  🔊 聽發音
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingDishId(dish.id);
+                                    setEditingDishOrig(dish.originalName);
+                                    setEditingDishZh(dish.translatedZh);
+                                    setEditingDishPrice(
+                                      dish.priceForeign ? String(dish.priceForeign) : ''
+                                    );
+                                  }}
+                                  className="text-[11px] font-bold text-[#8A7E70] hover:text-[#2D251E] inline-flex items-center gap-0.5"
+                                >
+                                  <Edit3 className="w-3 h-3" />
+                                  <span>改字</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDeleteDishItem(dish.id)}
+                                  className="text-[11px] font-bold text-[#8A7E70] hover:text-[#C83D33]"
+                                >
+                                  刪除
+                                </button>
+                              </div>
+                            </div>
 
-                        {/* Quantity Stepper */}
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => void handleUpdateDishQty(dish.id, -1)}
-                            className="w-8 h-8 rounded-xl bg-[#EFECE4] border border-[#DDD7C9] flex items-center justify-center text-[#2D251E] font-black active:scale-95"
-                          >
-                            <Minus className="w-3.5 h-3.5" />
-                          </button>
-                          <span className="w-6 text-center text-sm font-black text-[#2D251E]">
-                            {dish.quantity}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => void handleUpdateDishQty(dish.id, 1)}
-                            className="w-8 h-8 rounded-xl bg-[#F2CA62] border border-[#C48E63] flex items-center justify-center text-[#2D251E] font-black active:scale-95"
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                            {/* Quantity Stepper */}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => void handleUpdateDishQty(dish.id, -1)}
+                                className="w-8 h-8 rounded-xl bg-[#EFECE4] border border-[#DDD7C9] flex items-center justify-center text-[#2D251E] font-black active:scale-95"
+                              >
+                                <Minus className="w-3.5 h-3.5" />
+                              </button>
+                              <span className="w-6 text-center text-sm font-black text-[#2D251E]">
+                                {dish.quantity}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => void handleUpdateDishQty(dish.id, 1)}
+                                className="w-8 h-8 rounded-xl bg-[#F2CA62] border border-[#C48E63] flex items-center justify-center text-[#2D251E] font-black active:scale-95"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -2421,7 +3019,7 @@ export default function App() {
             ) : (
               <div className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] p-6 text-center space-y-3">
                 <p className="text-sm font-bold text-[#5C5044]">
-                  目前還沒有菜單紀錄，點選上方「🇯🇵 東京新宿居酒屋」或上傳菜單照片立即體驗「店員指指點餐大字卡」！
+                  上傳或直接 `Ctrl+V` 貼上任何日文／韓文／英文菜單照片，系統就會自動執行光學文字辨識 (OCR) 並翻成中文點餐卡！
                 </p>
               </div>
             )}
@@ -2904,11 +3502,16 @@ export default function App() {
               }`}
             >
               <div className="text-xs font-bold text-[#8A7E70]">
-                🇹🇼 {jumboCard.titleZh}
+                🇹🇼 我想表達：{jumboCard.titleZh}
               </div>
               <div className="text-2xl sm:text-4xl font-black text-[#2D251E] leading-snug break-words py-2">
                 {jumboCard.foreignText}
               </div>
+              {jumboCard.backTranslatedText && (
+                <div className="inline-block px-3 py-1.5 rounded-xl bg-emerald-950/5 border border-emerald-700/30 text-xs font-bold text-emerald-900">
+                  ✅ 雙向回譯核對：「{jumboCard.backTranslatedText}」
+                </div>
+              )}
               {jumboCard.romanization && (
                 <div className="text-sm font-semibold text-[#5C5044]">
                   🔤 {jumboCard.romanization}
@@ -3229,7 +3832,7 @@ export default function App() {
                   </span>
                 </div>
                 <p className="text-[#5C5044] leading-relaxed">
-                  不填 Key 即可免費使用語音辨識、即時翻譯與朗讀！若填入您的免費 Google AI Studio `Gemini API Key`，可額外解鎖**高抗噪原生錄音理解、拍照菜單全自動辨識、與道地敬語空耳教學**。
+                  不填 Key 即內建「免Key光學菜單 OCR ＋ Google 雙向回譯驗算」！若填入您的免費 Google AI Studio `Gemini API Key`，可進一步解鎖**手寫書法／複雜排版菜單 AI 視覺辨識、高抗噪原生錄音聽寫、與道地敬語空耳教學**。
                 </p>
 
                 <div className="relative">

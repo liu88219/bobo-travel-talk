@@ -33,6 +33,12 @@ export interface LanguageConfig {
   };
 }
 
+export interface WordBreakdownItem {
+  term: string;
+  meaning: string;
+  pronunciation?: string;
+}
+
 export interface DialogueTurn {
   id: string;
   speaker: 'me' | 'partner';
@@ -42,6 +48,14 @@ export interface DialogueTurn {
   romanization?: string;
   phoneticHint?: string;
   culturalTip?: string;
+  /** 獨立雙向回譯驗算（把翻譯出的外文再逆向直譯回中文，確認語意 100% 沒跑掉） */
+  backTranslatedText?: string;
+  /** 語意吻合度信心分數 (0~100) */
+  confidenceScore?: number;
+  /** 關鍵詞彙拆解對照（如：[2つ = 2份] [ネギ抜き = 不要蔥]） */
+  wordBreakdowns?: WordBreakdownItem[];
+  /** 另一種超直白短句替換說法 */
+  alternativeText?: string;
   engine: 'builtin' | 'gemini' | 'offline';
   starred?: boolean;
   createdAt: number;
@@ -77,6 +91,8 @@ export interface MenuScanSession {
   lang: LanguageCode;
   photoThumb?: string;
   hasLocalHiResPhoto?: boolean;
+  ocrEngine?: 'gemini' | 'tesseract-ocr' | 'manual' | 'demo';
+  orientation?: 'horizontal' | 'vertical';
   items: MenuDishItem[];
   selectedNotes: string[];
   createdAt: number;
@@ -114,6 +130,8 @@ export interface TravelProfile {
   speechRate: number;
   autoSpeakTranslation: boolean;
   faceToFaceFlipped: boolean;
+  /** 語音聽寫後是否先停留在輸入框讓使用者確認文字再送出翻譯 */
+  confirmTranscriptBeforeSend?: boolean;
   customRatesToTwd: Partial<Record<LanguageCode, number>>;
   geminiApiKey?: string;
   geminiModel?: string;
@@ -150,6 +168,7 @@ export function createInitialVaultState(): VaultState {
       speechRate: 0.95,
       autoSpeakTranslation: true,
       faceToFaceFlipped: false,
+      confirmTranscriptBeforeSend: false,
       customRatesToTwd: {},
       geminiApiKey: '',
       geminiModel: 'gemini-2.5-flash',

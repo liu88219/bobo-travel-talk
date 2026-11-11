@@ -19,6 +19,8 @@ import {
   buildLocalWordBreakdowns,
   cleanOcrMenuLines,
   detectDishDietaryWarning,
+  extractRestaurantNameFromInput,
+  searchRestaurantMenuOnline,
 } from '../services/translatorEngine';
 
 describe('BoboTalk Cloud Sync & Translator Engine', () => {
@@ -142,5 +144,32 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     expect(detectDishDietaryWarning(cleaned[0])).toContain('含牛肉');
     expect(detectDishDietaryWarning(cleaned[1])).toContain('含豬肉');
     expect(detectDishDietaryWarning(cleaned[2])).toContain('生食');
+  });
+
+  it('removes Tesseract Japanese inter-character spaces and splits multi-column dish lines', () => {
+    const tesseractSpacedRaw = `
+      親 子 丼 9 8 0 円   カ ツ 丼 1 , 1 0 0 円
+      天 ぷ ら う ど ん 1 , 2 5 0 円
+    `;
+    const cleaned = cleanOcrMenuLines(tesseractSpacedRaw);
+    expect(cleaned).toContain('親子丼 980円');
+    expect(cleaned).toContain('カツ丼 1,100円');
+    expect(cleaned).toContain('天ぷらうどん 1,250円');
+  });
+
+  it('extracts restaurant names from Google Maps URLs and fetches official restaurant menus', async () => {
+    const parsedName = extractRestaurantNameFromInput(
+      'https://www.google.com/maps/place/%E4%B8%80%E8%98%AD+%E6%96%B0%E5%AE%BF%E4%B8%AD%E5%A4%AE%E6%9D%B1%E5%8F%A3%E5%BA%97/@35.69,139.70,17z'
+    );
+    expect(parsedName).toContain('一蘭');
+
+    const menuRes = await searchRestaurantMenuOnline({
+      query: '一蘭',
+      targetLang: 'ja',
+    });
+    expect(menuRes.title).toContain('一蘭');
+    expect(menuRes.items.length).toBeGreaterThanOrEqual(5);
+    expect(menuRes.items[0].originalName).toContain('とんこつラーメン');
+    expect(menuRes.googleMapsUrl).toContain('google.com/maps');
   });
 });

@@ -29,6 +29,9 @@ import {
   Edit3,
   Crop,
   FileText,
+  Search,
+  MapPin,
+  ExternalLink,
 } from 'lucide-react';
 import {
   VaultState,
@@ -79,10 +82,14 @@ import {
   analyzeMenuPhotoFreeOcr,
   cropImageDataUrl,
   parseAndTranslateMenuLinesFree,
+  searchRestaurantMenuOnline,
   speakTextTTS,
   fetchLiveExchangeRatesToTwd,
   compressImageFileToDataUrl,
 } from './services/translatorEngine';
+import {
+  POPULAR_RESTAURANT_MENUS,
+} from './data/restaurantMenus';
 import {
   HeroTravelBanner,
   QuokkaBoboTravelBadge,
@@ -152,6 +159,7 @@ export default function App() {
 
   // Tab 3: Menu Photo & Point-to-Order Card state
   const [activeMenuId, setActiveMenuId] = useState<string>('');
+  const [restaurantSearchQuery, setRestaurantSearchQuery] = useState<string>('');
   const [isAnalyzingMenu, setIsAnalyzingMenu] = useState(false);
   const [ocrStatusText, setOcrStatusText] = useState<string>('');
   const [ocrProgressPct, setOcrProgressPct] = useState<number>(0);
@@ -162,6 +170,8 @@ export default function App() {
   const [editingDishOrig, setEditingDishOrig] = useState('');
   const [editingDishZh, setEditingDishZh] = useState('');
   const [editingDishPrice, setEditingDishPrice] = useState('');
+  const [activeNoteGroup, setActiveNoteGroup] = useState<'remove' | 'taste' | 'service'>('remove');
+  const [customNoteInputZh, setCustomNoteInputZh] = useState('');
 
   // Tab 4: Offline Phrasebook state
   const [selectedCategory, setSelectedCategory] = useState<PhraseCategory>('dining');
@@ -887,6 +897,68 @@ export default function App() {
   };
 
   /**
+   * 🔍 直接搜尋餐廳名稱（或貼上 Google Maps / Tabelog 網址），自動抓取該店真實招牌菜單並翻譯成店員點餐卡！
+   */
+  const handleSearchRestaurantMenu = async (overrideQuery?: string) => {
+    const q = (overrideQuery ?? restaurantSearchQuery).trim();
+    if (!q) {
+      notify('請先輸入餐廳名稱（例如：一蘭、鳥貴族、敘敘苑、阿夫利、淺草今半、橋村炸雞）');
+      return;
+    }
+    if (overrideQuery) {
+      setRestaurantSearchQuery(overrideQuery);
+    }
+    setIsAnalyzingMenu(true);
+    setOcrStatusText(`🔍 正在搜尋「${q}」的官方菜單...`);
+    setOcrProgressPct(18);
+    try {
+      const res = await searchRestaurantMenuOnline({
+        query: q,
+        targetLang: activeLang,
+        geminiApiKey: vaultRef.current.profile.geminiApiKey,
+        geminiModel: vaultRef.current.profile.geminiModel,
+        onProgress: (status, pct) => {
+          setOcrStatusText(status);
+          setOcrProgressPct(pct);
+        },
+      });
+      const now = Date.now();
+      const session: MenuScanSession = {
+        id: `menu-rest-${now}`,
+        title: res.title,
+        lang: res.lang,
+        ocrEngine: res.engine,
+        addressNote: res.addressNote,
+        googleMapsUrl: res.googleMapsUrl,
+        localFoodPortalUrl: res.localFoodPortalUrl,
+        officialUrl: res.officialUrl,
+        items: res.items,
+        selectedNotes: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      setActiveMenuId(session.id);
+      await commitVaultUpdate((prev) => ({
+        ...prev,
+        isUneditedDefault: false,
+        updatedAt: now,
+        profile: {
+          ...prev.profile,
+          activeLang: res.lang,
+        },
+        menuSessions: [session, ...prev.menuSessions],
+      }));
+      notify(`🍽️ 已載入「${res.title}」共 ${res.items.length} 道招牌菜單！（可點連結對照 Google Maps 實拍菜單）`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : '搜尋餐廳菜單時發生問題，請重試');
+    } finally {
+      setIsAnalyzingMenu(false);
+      setOcrStatusText('');
+      setOcrProgressPct(0);
+    }
+  };
+
+  /**
    * 執行真實菜單圖片辨識（有 Gemini Key 時優先走 Gemini Vision；無 Key 時直接走瀏覽器內建 Tesseract.js 真實 OCR，絕不塞假資料！）
    */
   const runMenuImageRecognition = useCallback(
@@ -960,12 +1032,13 @@ export default function App() {
           title:
             ocrRes.items.length > 0
               ? ocrRes.title
-              : `${langCfg.flag} 實拍菜單（請點下方切換直書／裁切重掃或修改文字）`,
+              : `${langCfg.flag} 實拍菜單（請點下方切換直書／局部區塊重掃）`,
           lang: activeLang,
           photoThumb: imageDataUrl,
           hasLocalHiResPhoto: true,
           ocrEngine: 'tesseract-ocr',
           orientation,
+          fullTranslatedSummaryZh: ocrRes.fullTranslatedSummaryZh,
           items: ocrRes.items,
           selectedNotes: [],
           createdAt: now,
@@ -1049,17 +1122,21 @@ export default function App() {
   // Re-scan current menu photo with different orientation or cropped region
   const handleRescanCurrentPhoto = async (
     newOrientation: 'horizontal' | 'vertical',
-    cropPreset?: 'full' | 'left' | 'right' | 'center'
+    cropPreset?: 'full' | 'left' | 'right' | 'top' | 'bottom' | 'center'
   ) => {
     if (!currentMenuSession?.photoThumb) return;
     setMenuOrientation(newOrientation);
     let targetImg = currentMenuSession.photoThumb;
     if (cropPreset === 'left') {
-      targetImg = await cropImageDataUrl(targetImg, { xPct: 2, yPct: 5, wPct: 48, hPct: 90 });
+      targetImg = await cropImageDataUrl(targetImg, { xPct: 2, yPct: 4, wPct: 48, hPct: 92 });
     } else if (cropPreset === 'right') {
-      targetImg = await cropImageDataUrl(targetImg, { xPct: 50, yPct: 5, wPct: 48, hPct: 90 });
+      targetImg = await cropImageDataUrl(targetImg, { xPct: 50, yPct: 4, wPct: 48, hPct: 92 });
+    } else if (cropPreset === 'top') {
+      targetImg = await cropImageDataUrl(targetImg, { xPct: 4, yPct: 4, wPct: 92, hPct: 48 });
+    } else if (cropPreset === 'bottom') {
+      targetImg = await cropImageDataUrl(targetImg, { xPct: 4, yPct: 50, wPct: 92, hPct: 48 });
     } else if (cropPreset === 'center') {
-      targetImg = await cropImageDataUrl(targetImg, { xPct: 12, yPct: 10, wPct: 76, hPct: 80 });
+      targetImg = await cropImageDataUrl(targetImg, { xPct: 10, yPct: 8, wPct: 80, hPct: 84 });
     }
     await runMenuImageRecognition(targetImg, newOrientation, currentMenuSession.id);
   };
@@ -1229,6 +1306,72 @@ export default function App() {
             : [...m.selectedNotes, noteId],
         };
       }),
+    }));
+  };
+
+  /**
+   * ✍️ 自訂任何點餐客製化句子（例如：「醬汁另外放」、「請幫我切成兩半」），即時翻譯成道地外文＋空耳並同步至點餐卡！
+   */
+  const handleApplyCustomMenuNote = async () => {
+    if (!currentMenuSession) return;
+    const cleanZh = customNoteInputZh.trim();
+    if (!cleanZh) return;
+    setIsAnalyzingMenu(true);
+    setOcrStatusText('✨ 正在翻譯您的自訂客製化需求...');
+    setOcrProgressPct(70);
+    try {
+      const res = await translateTextDualEngine({
+        text: cleanZh,
+        direction: 'zh-to-foreign',
+        targetLang: currentMenuSession.lang,
+        tone: 'polite',
+        geminiApiKey: vaultRef.current.profile.geminiApiKey,
+        geminiModel: vaultRef.current.profile.geminiModel,
+      });
+      const now = Date.now();
+      await commitVaultUpdate((prev) => ({
+        ...prev,
+        isUneditedDefault: false,
+        updatedAt: now,
+        menuSessions: prev.menuSessions.map((m) =>
+          m.id === currentMenuSession.id
+            ? {
+                ...m,
+                updatedAt: now,
+                customNoteZh: cleanZh,
+                customNoteForeign: res.translatedText,
+                customNotePhonetic: res.phoneticHint || res.romanization || undefined,
+              }
+            : m
+        ),
+      }));
+      setCustomNoteInputZh('');
+      notify(`✅ 已加入自訂客製化：「${res.translatedText}」`);
+    } finally {
+      setIsAnalyzingMenu(false);
+      setOcrStatusText('');
+      setOcrProgressPct(0);
+    }
+  };
+
+  const handleClearCustomMenuNote = async () => {
+    if (!currentMenuSession) return;
+    const now = Date.now();
+    await commitVaultUpdate((prev) => ({
+      ...prev,
+      isUneditedDefault: false,
+      updatedAt: now,
+      menuSessions: prev.menuSessions.map((m) =>
+        m.id === currentMenuSession.id
+          ? {
+              ...m,
+              updatedAt: now,
+              customNoteZh: undefined,
+              customNoteForeign: undefined,
+              customNotePhonetic: undefined,
+            }
+          : m
+      ),
     }));
   };
 
@@ -1832,48 +1975,53 @@ export default function App() {
 
             {/* Dual Big Voice Recording Buttons + Tone Selector */}
             <section className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] shadow-card p-3.5 space-y-3">
-              {/* Tone selector & Confirm transcript toggle */}
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-xs font-black text-[#5C5044]">
-                    🎭 語氣：
+              {/* Clean Segmented Tone Selector + Voice Confirm Mode Bar (Zero Wrapping!) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-black text-[#2D251E] whitespace-nowrap">
+                    🎭 翻譯語氣風格
                   </span>
+                  <button
+                    type="button"
+                    onClick={handleToggleConfirmBeforeSend}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-black border whitespace-nowrap transition ${
+                      vault.profile.confirmTranscriptBeforeSend
+                        ? 'bg-[#1E3158] text-white border-[#1E3158]'
+                        : 'bg-[#EFECE4] text-[#5C5044] border-[#DDD7C9] hover:bg-[#e5e1d7]'
+                    }`}
+                    title="開啟後，語音聽寫出的文字會先放入輸入框讓妳確認無錯字再翻譯"
+                  >
+                    {vault.profile.confirmTranscriptBeforeSend
+                      ? '✍️ 聽寫後先確認文字'
+                      : '⚡ 聽寫完直接秒翻'}
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9]">
                   {(
                     [
                       { id: 'polite', label: '🙇 禮貌敬語' },
-                      { id: 'concise', label: '🪧 精簡大字卡' },
+                      { id: 'concise', label: '🪧 精簡短句' },
                       { id: 'casual', label: '😊 自然口語' },
                     ] as const
-                  ).map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() => handleSelectTone(t.id)}
-                      className={`px-2.5 py-1 rounded-full text-[11px] font-bold border transition ${
-                        vault.profile.preferredTone === t.id
-                          ? 'bg-[#C48E63] text-white border-[#C48E63]'
-                          : 'bg-[#EFECE4] text-[#5C5044] border-[#DDD7C9]'
-                      }`}
-                    >
-                      {t.label}
-                    </button>
-                  ))}
+                  ).map((t) => {
+                    const active = vault.profile.preferredTone === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => handleSelectTone(t.id)}
+                        className={`py-2 px-2 rounded-xl text-xs font-black whitespace-nowrap text-center transition ${
+                          active
+                            ? 'bg-[#F2CA62] text-[#2D251E] border border-[#C48E63] shadow-sm'
+                            : 'text-[#5C5044] hover:text-[#2D251E]'
+                        }`}
+                      >
+                        {t.label}
+                      </button>
+                    );
+                  })}
                 </div>
-
-                <button
-                  type="button"
-                  onClick={handleToggleConfirmBeforeSend}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold border transition ${
-                    vault.profile.confirmTranscriptBeforeSend
-                      ? 'bg-[#1E3158] text-white border-[#1E3158]'
-                      : 'bg-[#EFECE4] text-[#5C5044] border-[#DDD7C9]'
-                  }`}
-                  title="開啟後，語音聽寫出的文字會先放入輸入框讓妳確認無錯字再翻譯"
-                >
-                  {vault.profile.confirmTranscriptBeforeSend
-                    ? '✓ 聽寫後先確認文字再翻'
-                    : '⚡ 聽寫完直接秒翻'}
-                </button>
               </div>
 
               {/* Interim voice transcript status */}
@@ -2489,10 +2637,74 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* TAB 3: 📸 菜單點餐卡 (Real OCR + Point-to-Order Card)        */}
+        {/* TAB 3: 📸 菜單點餐卡 (Real OCR + Restaurant Search + Card) */}
         {/* ========================================================= */}
         {activeTab === 'menu' && (
           <div className="space-y-3.5">
+            {/* NEW: Direct Restaurant Name / Google Maps Menu Search Card */}
+            <section className="bg-[#FAF8F3] rounded-3xl border-2 border-[#C48E63] shadow-card p-4 space-y-3">
+              <div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <h3 className="text-base font-black text-[#2D251E]">
+                    🔍 直接搜尋餐廳名稱，自動抓 Google／官方真實菜單
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full bg-[#F2CA62] text-[#2D251E] text-[10px] font-black border border-[#C48E63]">
+                    免拍菜單也能點！
+                  </span>
+                </div>
+                <p className="text-xs text-[#5C5044] mt-0.5">
+                  直接輸入店名（如：**一蘭**、**鳥貴族**、**敘敘苑**、**阿夫利**、**淺草今半**、**達摩串炸**、**橋村炸雞**、**明洞餃子**、**建興酒家**）或貼上 Google Maps 餐廳網址，直接幫妳抓出該店招牌必點菜單與外文點餐卡！
+                </p>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-[#8A7E70] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={restaurantSearchQuery}
+                    onChange={(e) => setRestaurantSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        void handleSearchRestaurantMenu();
+                      }
+                    }}
+                    placeholder={`輸入${langCfg.countryName}餐廳名稱或貼上 Google Maps 網址（如：一蘭 新宿、鳥貴族、敘敘苑...）`}
+                    className="w-full pl-9 pr-3 py-2.5 rounded-2xl bg-white border border-[#DDD7C9] text-xs sm:text-sm font-bold text-[#2D251E] focus:outline-none focus:border-[#C48E63]"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={isAnalyzingMenu}
+                  onClick={() => void handleSearchRestaurantMenu()}
+                  className="px-4 py-2.5 rounded-2xl bg-[#1E3158] hover:bg-[#152442] text-white text-xs sm:text-sm font-black flex items-center justify-center gap-1.5 shrink-0 shadow-sm active:scale-95 transition"
+                >
+                  <Search className="w-4 h-4 text-[#F2CA62]" />
+                  <span>{isAnalyzingMenu ? '搜尋菜單中...' : '🔍 抓餐廳菜單'}</span>
+                </button>
+              </div>
+
+              {/* 1-Tap Popular Tourist Restaurants Quick Chips */}
+              <div className="space-y-1.5">
+                <div className="text-[11px] font-black text-[#5C5044]">
+                  🔥 台灣人出國必吃名店一鍵抓菜單（點一下直接載入官方菜單＋價格）：
+                </div>
+                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                  {POPULAR_RESTAURANT_MENUS.map((rest) => (
+                    <button
+                      key={rest.id}
+                      type="button"
+                      disabled={isAnalyzingMenu}
+                      onClick={() => void handleSearchRestaurantMenu(rest.keywords[0])}
+                      className="px-2.5 py-1.5 rounded-full bg-white hover:bg-[#F2CA62]/50 border border-[#DDD7C9] text-[11px] font-black text-[#2D251E] shrink-0 transition active:scale-95"
+                    >
+                      {rest.displayName.split(' (')[0]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </section>
+
             <section className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] shadow-card p-4 space-y-3">
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -2505,33 +2717,33 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Step 1: Menu Text Direction Selector (Horizontal vs Vertical Japanese) */}
-              <div className="p-2.5 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9] flex items-center justify-between gap-2 flex-wrap">
-                <span className="text-xs font-black text-[#2D251E]">
-                  🧭 照片文字排版方向：
+              {/* Step 1: Menu Text Direction Selector (Clean 2-Col Segmented Bar) */}
+              <div className="space-y-1.5">
+                <span className="text-xs font-black text-[#2D251E] block">
+                  🧭 照片文字排版方向（系統亦會自動偵測日本直書）：
                 </span>
-                <div className="flex items-center gap-1.5">
+                <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9]">
                   <button
                     type="button"
                     onClick={() => setMenuOrientation('horizontal')}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-black border transition ${
+                    className={`py-2 px-2 rounded-xl text-xs font-black text-center whitespace-nowrap transition ${
                       menuOrientation === 'horizontal'
-                        ? 'bg-[#1E3158] text-white border-[#1E3158]'
-                        : 'bg-white text-[#5C5044] border-[#DDD7C9]'
+                        ? 'bg-[#F2CA62] text-[#2D251E] border border-[#C48E63] shadow-sm'
+                        : 'text-[#5C5044] hover:text-[#2D251E]'
                     }`}
                   >
-                    ↔️ 橫排菜單（一般餐廳／洋食）
+                    ↔️ 橫排菜單（一般餐廳）
                   </button>
                   <button
                     type="button"
                     onClick={() => setMenuOrientation('vertical')}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-black border transition ${
+                    className={`py-2 px-2 rounded-xl text-xs font-black text-center whitespace-nowrap transition ${
                       menuOrientation === 'vertical'
-                        ? 'bg-[#1E3158] text-white border-[#1E3158]'
-                        : 'bg-white text-[#5C5044] border-[#DDD7C9]'
+                        ? 'bg-[#F2CA62] text-[#2D251E] border border-[#C48E63] shadow-sm'
+                        : 'text-[#5C5044] hover:text-[#2D251E]'
                     }`}
                   >
-                    ↕️ 直書菜單（日本居酒屋／和食縦書き）
+                    ↕️ 直書菜單（日本縦書き）
                   </button>
                 </div>
               </div>
@@ -2660,6 +2872,10 @@ export default function App() {
                       <span className="px-2 py-0.5 rounded-full bg-[#EFECE4] border border-[#DDD7C9] text-[10px] font-black text-[#5C5044]">
                         {currentMenuSession.ocrEngine === 'gemini'
                           ? '✨ Gemini AI 視覺辨識'
+                          : currentMenuSession.ocrEngine === 'gemini-search'
+                          ? '🌐 Gemini Google Search 真實菜單'
+                          : currentMenuSession.ocrEngine === 'restaurant-search'
+                          ? '🔍 線上餐廳官方／招牌菜單'
                           : currentMenuSession.ocrEngine === 'tesseract-ocr'
                           ? `🔍 實拍光學 OCR (${
                               currentMenuSession.orientation === 'vertical'
@@ -2690,6 +2906,62 @@ export default function App() {
                     </select>
                   )}
                 </div>
+
+                {/* Restaurant Location Info & 1-Tap Google Maps / Tabelog / Official Menu Links */}
+                {(currentMenuSession.addressNote ||
+                  currentMenuSession.googleMapsUrl ||
+                  currentMenuSession.localFoodPortalUrl ||
+                  currentMenuSession.officialUrl) && (
+                  <div className="p-3 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9] space-y-2">
+                    {currentMenuSession.addressNote && (
+                      <div className="text-xs font-bold text-[#2D251E] flex items-start gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-[#C83D33] shrink-0 mt-0.5" />
+                        <span>{currentMenuSession.addressNote}</span>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {currentMenuSession.googleMapsUrl && (
+                        <a
+                          href={currentMenuSession.googleMapsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-[#F2CA62]/40 border border-[#C48E63] text-[11px] font-black text-[#2D251E] inline-flex items-center gap-1"
+                        >
+                          <ExternalLink className="w-3 h-3 text-[#C48E63]" />
+                          <span>📍 開啟 Google Maps 該店菜單相簿</span>
+                        </a>
+                      )}
+                      {currentMenuSession.localFoodPortalUrl && (
+                        <a
+                          href={currentMenuSession.localFoodPortalUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-[#F2CA62]/40 border border-[#DDD7C9] text-[11px] font-black text-[#5C5044] inline-flex items-center gap-1"
+                        >
+                          <ExternalLink className="w-3 h-3 text-[#5C5044]" />
+                          <span>
+                            {currentMenuSession.lang === 'ja'
+                              ? '🍽️ 查看 Tabelog 食べログ菜單'
+                              : currentMenuSession.lang === 'ko'
+                              ? '🍽️ 查看 Naver Map 韓文菜單'
+                              : '🍽️ 查看 Google 實拍菜單圖'}
+                          </span>
+                        </a>
+                      )}
+                      {currentMenuSession.officialUrl && (
+                        <a
+                          href={currentMenuSession.officialUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-[#F2CA62]/40 border border-[#DDD7C9] text-[11px] font-black text-[#1E3158] inline-flex items-center gap-1"
+                        >
+                          <ExternalLink className="w-3 h-3 text-[#1E3158]" />
+                          <span>🌐 官方網站菜單</span>
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* Uploaded Menu Photo Preview + Re-scan Orientation / Region Crop Toolbar */}
                 {currentMenuSession.photoThumb && (
@@ -2736,7 +3008,7 @@ export default function App() {
                         }
                         className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-black text-[#2D251E] hover:bg-[#F2CA62]/40"
                       >
-                        ↔️ 以橫排文字重掃整張
+                        ↔️ 橫排重掃整張
                       </button>
                       <button
                         type="button"
@@ -2746,7 +3018,35 @@ export default function App() {
                         }
                         className="px-2.5 py-1.5 rounded-xl bg-white border border-[#C48E63] text-[11px] font-black text-[#2D251E] hover:bg-[#F2CA62]/40"
                       >
-                        ↕️ 以日本直書（縦書き）重掃
+                        ↕️ 日本直書（縦書き）重掃
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isAnalyzingMenu}
+                        onClick={() =>
+                          void handleRescanCurrentPhoto(
+                            currentMenuSession.orientation || menuOrientation,
+                            'top'
+                          )
+                        }
+                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                      >
+                        <Crop className="w-3 h-3" />
+                        <span>只翻上半部</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isAnalyzingMenu}
+                        onClick={() =>
+                          void handleRescanCurrentPhoto(
+                            currentMenuSession.orientation || menuOrientation,
+                            'bottom'
+                          )
+                        }
+                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
+                      >
+                        <Crop className="w-3 h-3" />
+                        <span>只翻下半部</span>
                       </button>
                       <button
                         type="button"
@@ -2760,7 +3060,7 @@ export default function App() {
                         className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
                       >
                         <Crop className="w-3 h-3" />
-                        <span>只掃左半頁</span>
+                        <span>只翻左半欄</span>
                       </button>
                       <button
                         type="button"
@@ -2774,7 +3074,7 @@ export default function App() {
                         className="px-2.5 py-1.5 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] flex items-center gap-1"
                       >
                         <Crop className="w-3 h-3" />
-                        <span>只掃右半頁</span>
+                        <span>只翻右半欄</span>
                       </button>
                       <button
                         type="button"
@@ -2794,37 +3094,104 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Dietary & Order Notes Checkboxes */}
-                <div className="space-y-1.5">
-                  <span className="text-xs font-black text-[#5C5044]">
-                    🌿 點餐客製化備註（會自動翻譯附在點餐卡上）：
-                  </span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {DIETARY_ORDER_NOTES.map((note) => {
-                      const checked = currentMenuSession.selectedNotes.includes(
-                        note.id
-                      );
-                      return (
-                        <button
-                          key={note.id}
-                          type="button"
-                          onClick={() => void handleToggleMenuNote(note.id)}
-                          className={`px-2.5 py-1 rounded-full text-xs font-bold border transition ${
-                            checked
-                              ? 'bg-[#1E3158] text-white border-[#1E3158]'
-                              : 'bg-[#EFECE4] text-[#5C5044] border-[#DDD7C9]'
-                          }`}
-                        >
-                          {checked ? '✓ ' : ''}
-                          {note.zh}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                {/* STEP 1: 📖 先看懂菜單內容（中文翻譯一覽表 — 大字好讀！） */}
+                {currentMenuSession.items.length > 0 && (
+                  <div className="p-3.5 rounded-2xl bg-[#FFFDF8] border-2 border-[#F2CA62] space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-2 py-0.5 rounded-full bg-[#F2CA62] text-[#2D251E] text-[11px] font-black border border-[#C48E63]">
+                          步驟 1
+                        </span>
+                        <span className="text-xs sm:text-sm font-black text-[#2D251E]">
+                          📖 先看懂這份菜單賣什麼（繁體中文快速總覽）
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const mCfg = LANGUAGES[currentMenuSession.lang] || langCfg;
+                          const rate =
+                            vault.profile.customRatesToTwd?.[currentMenuSession.lang] ||
+                            mCfg.defaultRateToTwd;
+                          const summaryText = currentMenuSession.items
+                            .map((it, idx) => {
+                              const twd = it.priceForeign
+                                ? ` / 約 NT$${Math.round(it.priceForeign * rate)}`
+                                : '';
+                              const priceStr = it.priceForeign
+                                ? ` — ${mCfg.currencySymbol}${it.priceForeign.toLocaleString()}${twd}`
+                                : '';
+                              return `${idx + 1}. ${it.translatedZh}（${it.originalName}）${priceStr}`;
+                            })
+                            .join('\n');
+                          navigator.clipboard?.writeText(summaryText);
+                          notify('📋 已複製整份中文菜單翻譯！');
+                        }}
+                        className="px-2.5 py-1 rounded-xl bg-[#EFECE4] hover:bg-[#e5e1d7] border border-[#DDD7C9] text-[11px] font-black text-[#2D251E] inline-flex items-center gap-1"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>複製中文菜單</span>
+                      </button>
+                    </div>
 
-                {/* Dish Cards */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {currentMenuSession.items.map((dish, idx) => {
+                        const mCfg = LANGUAGES[currentMenuSession.lang] || langCfg;
+                        const rate =
+                          vault.profile.customRatesToTwd?.[currentMenuSession.lang] ||
+                          mCfg.defaultRateToTwd;
+                        const twdPrice = dish.priceForeign
+                          ? Math.round(dish.priceForeign * rate)
+                          : null;
+                        return (
+                          <div
+                            key={`summary-${dish.id}`}
+                            onClick={() => void handleUpdateDishQty(dish.id, 1)}
+                            className="cursor-pointer p-2.5 rounded-xl bg-[#FAF8F3] hover:bg-[#F2CA62]/25 border border-[#DDD7C9] flex items-start justify-between gap-2 transition"
+                            title="點一下可直接 +1 加入點餐"
+                          >
+                            <div className="min-w-0">
+                              <div className="text-xs sm:text-sm font-black text-[#2D251E] leading-snug">
+                                <span className="text-[#C48E63] mr-1">
+                                  {idx + 1}.
+                                </span>
+                                {dish.translatedZh}
+                              </div>
+                              <div className="text-[11px] font-semibold text-[#8A7E70] truncate">
+                                {dish.originalName}
+                              </div>
+                            </div>
+                            {twdPrice !== null && (
+                              <div className="text-right shrink-0">
+                                <div className="text-xs font-black text-[#C83D33]">
+                                  約 NT${twdPrice.toLocaleString()}
+                                </div>
+                                <div className="text-[10px] font-bold text-[#8A7E70]">
+                                  {mCfg.currencySymbol}
+                                  {dish.priceForeign?.toLocaleString()}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[11px] font-bold text-[#8A7E70]">
+                      💡 看懂中文後，直接點上方任一道菜（或在下方卡片按 `＋`）就能加入點餐清單！
+                    </p>
+                  </div>
+                )}
+
+                {/* STEP 2: Dish Cards with Quantity Steppers */}
                 <div className="space-y-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="px-2 py-0.5 rounded-full bg-[#EFECE4] text-[#2D251E] text-[11px] font-black border border-[#DDD7C9]">
+                      步驟 2
+                    </span>
+                    <span className="text-xs sm:text-sm font-black text-[#2D251E]">
+                      🛒 選擇想點的餐點與份數（點 `✏️ 改字` 可微調文字）
+                    </span>
+                  </div>
                   {currentMenuSession.items.map((dish) => {
                     const mCfg = LANGUAGES[currentMenuSession.lang] || langCfg;
                     const rate =
@@ -2981,6 +3348,241 @@ export default function App() {
                       </div>
                     );
                   })}
+                </div>
+
+                {/* STEP 3: ✨ 點餐客製化＆忌口翻譯器（勾選馬上看到外文＋空耳發音，可直接唸給店員聽或放大秀卡！） */}
+                <div className="p-3.5 rounded-2xl bg-[#EFECE4] border-2 border-[#DDD7C9] space-y-3">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      <span className="px-2 py-0.5 rounded-full bg-[#1E3158] text-white text-[11px] font-black">
+                        步驟 3
+                      </span>
+                      <span className="text-xs sm:text-sm font-black text-[#2D251E]">
+                        ✨ 點餐客製化＆忌口翻譯小幫手（勾選即顯外文＋空耳）
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 3-Tab Category Switcher for Customization */}
+                  <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-white border border-[#DDD7C9]">
+                    {(
+                      [
+                        { id: 'remove', label: '🚫 忌口不要加' },
+                        { id: 'taste', label: '🍜 口味／去冰' },
+                        { id: 'service', label: '🙋 要水／外帶' },
+                      ] as const
+                    ).map((grp) => (
+                      <button
+                        key={grp.id}
+                        type="button"
+                        onClick={() => setActiveNoteGroup(grp.id)}
+                        className={`py-1.5 px-2 rounded-xl text-xs font-black text-center whitespace-nowrap transition ${
+                          activeNoteGroup === grp.id
+                            ? 'bg-[#F2CA62] text-[#2D251E] border border-[#C48E63] shadow-sm'
+                            : 'text-[#5C5044] hover:text-[#2D251E]'
+                        }`}
+                      >
+                        {grp.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Pill Options for Selected Group */}
+                  <div className="flex flex-wrap gap-1.5">
+                    {DIETARY_ORDER_NOTES.filter(
+                      (n) => n.group === activeNoteGroup
+                    ).map((note) => {
+                      const checked = currentMenuSession.selectedNotes.includes(
+                        note.id
+                      );
+                      return (
+                        <button
+                          key={note.id}
+                          type="button"
+                          onClick={() => void handleToggleMenuNote(note.id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-black border transition active:scale-95 ${
+                            checked
+                              ? 'bg-[#1E3158] text-white border-[#1E3158] shadow-sm'
+                              : 'bg-white text-[#2D251E] border-[#DDD7C9] hover:bg-[#F2CA62]/30'
+                          }`}
+                        >
+                          {checked ? '✓ ' : '＋ '}
+                          {note.zh}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Free-Form Custom Request Input */}
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text"
+                      value={customNoteInputZh}
+                      onChange={(e) => setCustomNoteInputZh(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          void handleApplyCustomMenuNote();
+                        }
+                      }}
+                      placeholder="✍️ 還有其他需求？直接輸入中文（如：醬汁另外放、請幫我切成兩半）..."
+                      className="flex-1 px-3 py-2 rounded-xl bg-white border border-[#DDD7C9] text-xs font-bold text-[#2D251E]"
+                    />
+                    <button
+                      type="button"
+                      disabled={isAnalyzingMenu || !customNoteInputZh.trim()}
+                      onClick={() => void handleApplyCustomMenuNote()}
+                      className="px-3 py-2 rounded-xl bg-[#C48E63] disabled:opacity-40 text-white text-xs font-black shrink-0"
+                    >
+                      ＋ 翻譯加入
+                    </button>
+                  </div>
+
+                  {/* LIVE BILINGUAL PREVIEW OF SELECTED CUSTOMIZATIONS (Immediate Feedback & Audio/Jumbo Show Card!) */}
+                  {(currentMenuSession.selectedNotes.length > 0 ||
+                    currentMenuSession.customNoteForeign) && (
+                    <div className="p-3 rounded-2xl bg-[#FFFDF8] border-2 border-[#C48E63] space-y-2">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="text-[11px] font-black text-[#C83D33]">
+                          🗣️ 已選客製化外文即時翻譯（可直接唸給店員聽或放大秀卡，也會自動附在點餐卡上）：
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const mCfg = LANGUAGES[currentMenuSession.lang] || langCfg;
+                              const parts = currentMenuSession.selectedNotes
+                                .map(
+                                  (nId) =>
+                                    DIETARY_ORDER_NOTES.find((n) => n.id === nId)
+                                      ?.translations[currentMenuSession.lang] || ''
+                                )
+                                .filter(Boolean);
+                              if (currentMenuSession.customNoteForeign) {
+                                parts.push(currentMenuSession.customNoteForeign);
+                              }
+                              speakTextTTS(parts.join('。 '), mCfg.bcp47, 0.9);
+                            }}
+                            className="px-2.5 py-1 rounded-xl bg-[#F2CA62] text-[#2D251E] border border-[#C48E63] text-[11px] font-black inline-flex items-center gap-1"
+                          >
+                            <Volume2 className="w-3 h-3" />
+                            <span>🔊 唸給店員聽</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const zhParts = currentMenuSession.selectedNotes
+                                .map(
+                                  (nId) =>
+                                    DIETARY_ORDER_NOTES.find((n) => n.id === nId)
+                                      ?.zh || ''
+                                )
+                                .filter(Boolean);
+                              if (currentMenuSession.customNoteZh) {
+                                zhParts.push(currentMenuSession.customNoteZh);
+                              }
+                              const foreignParts = currentMenuSession.selectedNotes
+                                .map(
+                                  (nId) =>
+                                    DIETARY_ORDER_NOTES.find((n) => n.id === nId)
+                                      ?.translations[currentMenuSession.lang] || ''
+                                )
+                                .filter(Boolean);
+                              if (currentMenuSession.customNoteForeign) {
+                                foreignParts.push(
+                                  currentMenuSession.customNoteForeign
+                                );
+                              }
+                              const phonParts = currentMenuSession.selectedNotes
+                                .map(
+                                  (nId) =>
+                                    DIETARY_ORDER_NOTES.find((n) => n.id === nId)
+                                      ?.phoneticHints?.[currentMenuSession.lang] || ''
+                                )
+                                .filter(Boolean);
+                              if (currentMenuSession.customNotePhonetic) {
+                                phonParts.push(
+                                  currentMenuSession.customNotePhonetic
+                                );
+                              }
+                              setJumboCard({
+                                titleZh: zhParts.join(' ＋ '),
+                                foreignText: foreignParts.join('\n'),
+                                phoneticHint: phonParts.join(' ／ ') || undefined,
+                                lang: currentMenuSession.lang,
+                              });
+                            }}
+                            className="px-2.5 py-1 rounded-xl bg-[#1E3158] text-white text-[11px] font-black inline-flex items-center gap-1"
+                          >
+                            <Maximize2 className="w-3 h-3" />
+                            <span>🔍 單獨放大給店員看</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        {currentMenuSession.selectedNotes.map((nId) => {
+                          const found = DIETARY_ORDER_NOTES.find(
+                            (n) => n.id === nId
+                          );
+                          if (!found) return null;
+                          const phon =
+                            found.phoneticHints?.[currentMenuSession.lang];
+                          return (
+                            <div
+                              key={nId}
+                              className="p-2 rounded-xl bg-[#FAF8F3] border border-[#DDD7C9] flex items-start justify-between gap-2"
+                            >
+                              <div className="space-y-0.5">
+                                <div className="text-xs font-bold text-[#8A7E70]">
+                                  {found.zh}
+                                </div>
+                                <div className="text-sm font-black text-[#2D251E]">
+                                  {found.translations[currentMenuSession.lang]}
+                                </div>
+                                {phon && (
+                                  <div className="text-[11px] font-bold text-[#C48E63]">
+                                    🗣️ 空耳：{phon}
+                                  </div>
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => void handleToggleMenuNote(nId)}
+                                className="text-[11px] font-bold text-[#8A7E70] hover:text-[#C83D33] shrink-0"
+                              >
+                                移除
+                              </button>
+                            </div>
+                          );
+                        })}
+
+                        {currentMenuSession.customNoteForeign && (
+                          <div className="p-2 rounded-xl bg-[#FAF8F3] border border-[#C48E63] flex items-start justify-between gap-2">
+                            <div className="space-y-0.5">
+                              <div className="text-xs font-bold text-[#8A7E70]">
+                                ✍️ 自訂：{currentMenuSession.customNoteZh}
+                              </div>
+                              <div className="text-sm font-black text-[#2D251E]">
+                                {currentMenuSession.customNoteForeign}
+                              </div>
+                              {currentMenuSession.customNotePhonetic && (
+                                <div className="text-[11px] font-bold text-[#C48E63]">
+                                  🗣️ 發音：{currentMenuSession.customNotePhonetic}
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void handleClearCustomMenuNote()}
+                              className="text-[11px] font-bold text-[#8A7E70] hover:text-[#C83D33] shrink-0"
+                            >
+                              移除
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Sticky Point-to-Order Trigger Bar */}
@@ -3604,7 +4206,8 @@ export default function App() {
                 ))}
               </div>
 
-              {currentMenuSession.selectedNotes.length > 0 && (
+              {(currentMenuSession.selectedNotes.length > 0 ||
+                currentMenuSession.customNoteForeign) && (
                 <div className="p-3 rounded-2xl bg-[#EFECE4] border border-[#C48E63] space-y-1">
                   <div className="text-xs font-black text-[#C83D33]">
                     📌 飲食忌口與客製化備註：
@@ -3623,6 +4226,14 @@ export default function App() {
                       </div>
                     );
                   })}
+                  {currentMenuSession.customNoteForeign && (
+                    <div className="text-sm font-black text-[#2D251E]">
+                      • {currentMenuSession.customNoteForeign}
+                      <span className="text-xs text-[#8A7E70] ml-1">
+                        ({currentMenuSession.customNoteZh})
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -3639,15 +4250,18 @@ export default function App() {
                   const dishLines = selectedMenuDishes
                     .map((d) => `${d.originalName}、${d.quantity}つ`)
                     .join('。 ');
-                  const notesLine = currentMenuSession.selectedNotes
+                  const notesArr = currentMenuSession.selectedNotes
                     .map(
                       (nId) =>
                         DIETARY_ORDER_NOTES.find((n) => n.id === nId)?.translations[
                           currentMenuSession.lang
                         ] || ''
                     )
-                    .filter(Boolean)
-                    .join('。 ');
+                    .filter(Boolean);
+                  if (currentMenuSession.customNoteForeign) {
+                    notesArr.push(currentMenuSession.customNoteForeign);
+                  }
+                  const notesLine = notesArr.join('。 ');
                   speakTextTTS(
                     `${mCfg.orderGreeting} ${dishLines}。 ${notesLine} ${mCfg.orderOutro}`,
                     mCfg.bcp47,

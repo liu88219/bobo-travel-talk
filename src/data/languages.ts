@@ -222,28 +222,22 @@ export const PHRASE_CATEGORIES: Array<{
   { id: 'emergency', label: '緊急求助＆遺失', emoji: '🆘' },
 ];
 
-export const DIETARY_ORDER_NOTES: Array<{
+export type MenuNoteGroup = 'remove' | 'taste' | 'service';
+
+export interface DietaryOrderNoteItem {
   id: string;
+  group: MenuNoteGroup;
   zh: string;
   translations: Record<LanguageCode, string>;
-}> = [
-  {
-    id: 'no-ice',
-    zh: '🧊 飲料去冰／少冰',
-    translations: {
-      ja: '氷なし（または氷少なめ）でお願いします',
-      ko: '얼음 빼고(조금만) 주세요',
-      en: 'No ice (or less ice), please',
-      th: 'ไม่ใส่น้ำแข็ง (หรือน้ำแข็งน้อย) ค่ะ',
-      vi: 'Cho mình ít đá hoặc không đá nhé',
-      fr: 'Sans glaçons, s’il vous plaît',
-      es: 'Sin hielo, por favor',
-      de: 'Ohne Eis, bitte',
-    },
-  },
+  phoneticHints?: Partial<Record<LanguageCode, string>>;
+}
+
+export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
+  // 🚫 忌口＆去料 (remove)
   {
     id: 'no-green-onion',
-    zh: '🌿 不要加蔥／不要香菜',
+    group: 'remove',
+    zh: '🌿 不要蔥／不要香菜',
     translations: {
       ja: 'ネギ・パクチー抜きでお願いします',
       ko: '파하고 고수는 빼 주세요',
@@ -254,9 +248,53 @@ export const DIETARY_ORDER_NOTES: Array<{
       es: 'Sin cebolla verde ni cilantro, por favor',
       de: 'Ohne Frühlingszwiebeln und Koriander, bitte',
     },
+    phoneticHints: {
+      ja: '內gi・帕苦七 努ki 得 歐內嘎伊希媽斯',
+      ko: '帕 哈勾 勾蘇 嫩 背 朱誰唷',
+      th: '買塞 東紅 勒 帕七 卡',
+    },
+  },
+  {
+    id: 'no-wasabi',
+    group: 'remove',
+    zh: '🟢 不要芥末 (サビ抜き)',
+    translations: {
+      ja: 'わさび抜き（サビ抜き）でお願いします',
+      ko: '와사비 빼 주세요',
+      en: 'No wasabi, please',
+      th: 'ไม่ใส่วาซาบิค่ะ',
+      vi: 'Không bỏ mù tạt (wasabi) nhé',
+      fr: 'Sans wasabi, s’il vous plaît',
+      es: 'Sin wasabi, por favor',
+      de: 'Ohne Wasabi, bitte',
+    },
+    phoneticHints: {
+      ja: '撒比 努ki 得 歐內嘎伊希媽斯',
+      ko: '哇撒比 背 朱誰唷',
+    },
+  },
+  {
+    id: 'no-garlic',
+    group: 'remove',
+    zh: '🧄 不要加蒜頭',
+    translations: {
+      ja: 'ニンニク抜きでお願いします',
+      ko: '마늘 빼 주세요',
+      en: 'No garlic, please',
+      th: 'ไม่ใส่กระเทียมค่ะ',
+      vi: 'Không bỏ tỏi nhé',
+      fr: 'Sans ail, s’il vous plaît',
+      es: 'Sin ajo, por favor',
+      de: 'Ohne Knoblauch, bitte',
+    },
+    phoneticHints: {
+      ja: '您尼苦 努ki 得 歐內嘎伊希媽斯',
+      ko: '媽呢 背 朱誰唷',
+    },
   },
   {
     id: 'no-beef',
+    group: 'remove',
     zh: '🐄 不吃牛肉',
     translations: {
       ja: '牛肉（ぎゅうにく）は食べられません',
@@ -268,9 +306,55 @@ export const DIETARY_ORDER_NOTES: Array<{
       es: 'No como carne de res',
       de: 'Ich esse kein Rindfleisch',
     },
+    phoneticHints: {
+      ja: '牛尼苦 哇 塔杯拉勒媽線',
+      ko: '搜勾gi 嫩 某 某勾唷',
+    },
+  },
+  {
+    id: 'no-pork',
+    group: 'remove',
+    zh: '🐷 不吃豬肉',
+    translations: {
+      ja: '豚肉（ぶたにく）は食べられません',
+      ko: '돼지고기는 못 먹어요',
+      en: 'I do not eat pork',
+      th: 'ไม่ทานเนื้อหมูค่ะ',
+      vi: 'Mình không ăn thịt heo',
+      fr: 'Je ne mange pas de porc',
+      es: 'No como carne de cerdo',
+      de: 'Ich esse kein Schweinefleisch',
+    },
+    phoneticHints: {
+      ja: '布塔尼苦 哇 塔杯拉勒媽線',
+      ko: '堆吉勾gi 嫩 某 某勾唷',
+    },
+  },
+
+  // 🍜 口味＆飲品調整 (taste)
+  {
+    id: 'no-ice',
+    group: 'taste',
+    zh: '🧊 飲料去冰／少冰',
+    translations: {
+      ja: '氷なし（または氷少なめ）でお願いします',
+      ko: '얼음 빼고(조금만) 주세요',
+      en: 'No ice (or less ice), please',
+      th: 'ไม่ใส่น้ำแข็ง (หรือน้ำแข็งน้อย) ค่ะ',
+      vi: 'Cho mình ít đá hoặc không đá nhé',
+      fr: 'Sans glaçons, s’il vous plaît',
+      es: 'Sin hielo, por favor',
+      de: 'Ohne Eis, bitte',
+    },
+    phoneticHints: {
+      ja: '口哩 那希（口哩 斯苦那妹）得 歐內嘎伊希媽斯',
+      ko: '歐冷 背勾 朱誰唷',
+      th: '買塞 楠肯 卡',
+    },
   },
   {
     id: 'less-spicy',
+    group: 'taste',
     zh: '🌶️ 請做小辣／不辣',
     translations: {
       ja: '辛さ控えめ（または辛くないよう）でお願いします',
@@ -282,19 +366,166 @@ export const DIETARY_ORDER_NOTES: Array<{
       es: 'Sin picante, por favor',
       de: 'Bitte nicht scharf',
     },
+    phoneticHints: {
+      ja: '卡拉撒 喜卡欸妹 得 歐內嘎伊希媽斯',
+      ko: '安 妹給 嘿 朱誰唷',
+      th: '佩餒 罵罵（買佩）卡',
+    },
+  },
+  {
+    id: 'no-sugar',
+    group: 'taste',
+    zh: '🍬 飲料無糖／微糖',
+    translations: {
+      ja: '無糖（甘み抜き・シロップなし）でお願いします',
+      ko: '시럽 빼고(덜 달게) 해 주세요',
+      en: 'Unsweetened / less sugar, please',
+      th: 'หวานน้อยมากๆ (หรือไม่ใส่น้ำตาล) ค่ะ',
+      vi: 'Ít đường hoặc không đường nhé',
+      fr: 'Sans sucre, s’il vous plaît',
+      es: 'Sin azúcar, por favor',
+      de: 'Ohne Zucker, bitte',
+    },
+    phoneticHints: {
+      ja: '阿媽咪 努ki（希漏普 那希）得 歐內嘎伊希媽斯',
+      ko: '偷 達給 嘿 朱誰唷',
+      th: '丸餒 罵罵 卡',
+    },
+  },
+  {
+    id: 'light-soup',
+    group: 'taste',
+    zh: '🧂 湯頭／口味清淡一點',
+    translations: {
+      ja: '味は薄め（あっさり）でお願いします',
+      ko: '싱겁게(덜 짜게) 해 주세요',
+      en: 'Less salty / lighter flavor, please',
+      th: 'ขอรสไม่จัด (เค็มน้อย) ค่ะ',
+      vi: 'Làm nhạt hơn một chút giúp mình nhé',
+      fr: 'Moins salé, s’il vous plaît',
+      es: 'Con poca sal, por favor',
+      de: 'Weniger salzig, bitte',
+    },
+    phoneticHints: {
+      ja: '阿吉 哇 烏斯妹 得 歐內嘎伊希媽斯',
+      ko: '偷 扎給 嘿 朱誰唷',
+    },
+  },
+  {
+    id: 'less-rice',
+    group: 'taste',
+    zh: '🍚 飯量少一點 (少なめ)',
+    translations: {
+      ja: 'ご飯は少なめでお願いします',
+      ko: '밥은 조금만 주세요',
+      en: 'Less rice, please',
+      th: 'ขอข้าวน้อยค่ะ',
+      vi: 'Cho mình ít cơm thôi nhé',
+      fr: 'Un peu moins de riz, s’il vous plaît',
+      es: 'Con poco arroz, por favor',
+      de: 'Wenig Reis, bitte',
+    },
+    phoneticHints: {
+      ja: '勾航 哇 斯苦那妹 得 歐內嘎伊希媽斯',
+      ko: '帕奔 揪跟慢 朱誰唷',
+    },
+  },
+  {
+    id: 'well-done-egg',
+    group: 'taste',
+    zh: '🥚 蛋／肉要全熟',
+    translations: {
+      ja: '卵（お肉）はよく焼き（しっかり加熱）でお願いします',
+      ko: '계란(고기)은 완전히 익혀 주세요',
+      en: 'Egg / meat well-done (fully cooked), please',
+      th: 'ขอไข่สุกๆ (เนื้อสุกๆ) ค่ะ',
+      vi: 'Làm trứng chín kỹ (thịt chín kỹ) giúp mình nhé',
+      fr: 'Bien cuit, s’il vous plaît',
+      es: 'Bien cocido, por favor',
+      de: 'Gut durchgebraten, bitte',
+    },
+    phoneticHints: {
+      ja: '塔媽勾 哇 唷苦雅ki 得 歐內嘎伊希媽斯',
+      ko: '丸炯喜 伊ㄎ優 朱誰唷',
+    },
+  },
+
+  // 🙋 桌邊服務＆外帶結帳 (service)
+  {
+    id: 'ask-water',
+    group: 'service',
+    zh: '💧 請給我冰水／飲用水',
+    translations: {
+      ja: 'すみません、お水（おひや）をください',
+      ko: '저기요, 물 좀 주세요',
+      en: 'Could we have some tap water, please?',
+      th: 'ขอน้ำเปล่าด้วยค่ะ',
+      vi: 'Cho mình xin nước lọc nhé',
+      fr: 'Une carafe d’eau, s’il vous plaît',
+      es: 'Un vaso de agua, por favor',
+      de: 'Ein Glas Leitungswasser, bitte',
+    },
+    phoneticHints: {
+      ja: '斯咪媽線，歐咪茲 歐 苦達賽',
+      ko: '揪gi唷，木 炯 朱誰唷',
+      fr: '暈 卡拉夫 兜 希夫普蕾',
+    },
+  },
+  {
+    id: 'small-plates',
+    group: 'service',
+    zh: '🥣 請給我分食小碗／小盤子',
+    translations: {
+      ja: '取り皿（とりざら）とスプーンをください',
+      ko: '앞접시랑 수저 좀 주세요',
+      en: 'Could we have small sharing plates, please?',
+      th: 'ขอจานแบ่งและช้อนด้วยค่ะ',
+      vi: 'Cho mình xin chén nhỏ để chia đồ ăn nhé',
+      fr: 'Pourriez-vous nous apporter de petites assiettes ?',
+      es: '¿Nos trae platos pequeños para compartir, por favor?',
+      de: 'Könnten wir bitte kleine Teller zum Teilen haben?',
+    },
+    phoneticHints: {
+      ja: '偷哩扎拉 歐 苦達賽',
+      ko: '阿揪希 郎 蘇揪 炯 朱誰唷',
+    },
+  },
+  {
+    id: 'takeout-order',
+    group: 'service',
+    zh: '🥡 我要外帶／打包 (持ち帰り)',
+    translations: {
+      ja: '持ち帰り（テイクアウト）でお願いします',
+      ko: '포장해 주세요 (가지고 갈게요)',
+      en: 'To go / takeaway, please',
+      th: 'สั่งกลับบ้านค่ะ (ใส่กล่อง)',
+      vi: 'Cho mìnhแพ็ค mang về nhé',
+      fr: 'À emporter, s’il vous plaît',
+      es: 'Para llevar, por favor',
+      de: 'Zum Mitnehmen, bitte',
+    },
+    phoneticHints: {
+      ja: '某七卡欸哩（Take-out）得 歐內嘎伊希媽斯',
+      ko: '坡江 嘿 朱誰唷',
+    },
   },
   {
     id: 'tax-free',
-    zh: '🛂 請幫我辦理免稅 Tax-Free',
+    group: 'service',
+    zh: '🧾 請幫我結帳／免稅',
     translations: {
-      ja: '免税（Tax-Free）手続きをお願いします',
-      ko: '택스 리펀드(면세) 해 주세요',
-      en: 'Could we have a Tax-Free refund form, please?',
-      th: 'ขอใบกำกับภาษี VAT Refund ด้วยค่ะ',
-      vi: 'Cho mình xin hóa đơn hoàn thuế nhé',
-      fr: 'Pourriez-vous faire la détaxe, s’il vous plaît ?',
-      es: '¿Me puede hacer el formulario de Tax Free, por favor?',
-      de: 'Könnten Sie bitte ein Tax-Free-Formular ausstellen?',
+      ja: 'お会計（または免税手続き）をお願いします',
+      ko: '계산(택스 리펀드) 해 주세요',
+      en: 'Could we have the bill (or Tax-Free form), please?',
+      th: 'เช็คบิล (ขอใบกำกับภาษี VAT Refund) ด้วยค่ะ',
+      vi: 'Tính tiền giúp mình nhé',
+      fr: 'L’addition (et la détaxe), s’il vous plaît',
+      es: 'La cuenta, por favor',
+      de: 'Die Rechnung, bitte',
+    },
+    phoneticHints: {
+      ja: '歐開K 歐 歐內嘎伊希媽斯',
+      ko: '給三 嘿 朱誰唷',
     },
   },
 ];

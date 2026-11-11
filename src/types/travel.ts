@@ -91,8 +91,16 @@ export interface MenuScanSession {
   lang: LanguageCode;
   photoThumb?: string;
   hasLocalHiResPhoto?: boolean;
-  ocrEngine?: 'gemini' | 'tesseract-ocr' | 'manual' | 'demo';
+  ocrEngine?: 'gemini' | 'gemini-search' | 'restaurant-search' | 'tesseract-ocr' | 'manual' | 'demo';
   orientation?: 'horizontal' | 'vertical';
+  addressNote?: string;
+  googleMapsUrl?: string;
+  localFoodPortalUrl?: string;
+  officialUrl?: string;
+  fullTranslatedSummaryZh?: string;
+  customNoteZh?: string;
+  customNoteForeign?: string;
+  customNotePhonetic?: string;
   items: MenuDishItem[];
   selectedNotes: string[];
   createdAt: number;

@@ -2,6 +2,7 @@ import {
   LanguageCode,
   TranslationTone,
   MenuDishItem,
+  MenuDishBbox,
   WordBreakdownItem,
 } from '../types/travel';
 import {
@@ -696,13 +697,107 @@ export function detectDishDietaryWarning(text: string): string | undefined {
 }
 
 /**
- * 拍照菜單視覺辨識（Gemini Vision — 支援手寫字、直書縦書き、多欄複雜菜單）
+ * 將局部區段座標 (0~100%) 映射回整張原圖座標 (0~100%)
+ */
+export function mapSubBboxToFullImage(
+  subBbox: MenuDishBbox,
+  parentRegion?: MenuDishBbox
+): MenuDishBbox {
+  if (!parentRegion) return subBbox;
+  const xPct = Math.max(
+    0,
+    Math.min(96, parentRegion.xPct + (subBbox.xPct / 100) * parentRegion.wPct)
+  );
+  const yPct = Math.max(
+    0,
+    Math.min(96, parentRegion.yPct + (subBbox.yPct / 100) * parentRegion.hPct)
+  );
+  const wPct = Math.max(
+    6,
+    Math.min(100 - xPct, (subBbox.wPct / 100) * parentRegion.wPct)
+  );
+  const hPct = Math.max(
+    4,
+    Math.min(100 - yPct, (subBbox.hPct / 100) * parentRegion.hPct)
+  );
+  return {
+    xPct: Math.round(xPct * 10) / 10,
+    yPct: Math.round(yPct * 10) / 10,
+    wPct: Math.round(wPct * 10) / 10,
+    hPct: Math.round(hPct * 10) / 10,
+  };
+}
+
+/**
+ * 確保每一道辨識出的菜名都有對應在照片上的座標框 (bbox)，方便像 iPhone 相機一樣直接在照片原位覆蓋中文或產生全新中文對照菜單圖
+ */
+export function ensureMenuDishesHaveBboxes(
+  items: MenuDishItem[],
+  orientation: 'horizontal' | 'vertical' = 'horizontal',
+  parentRegion?: MenuDishBbox
+): MenuDishItem[] {
+  const total = Math.max(1, items.length);
+  return items.map((item, idx) => {
+    if (item.bbox) {
+      return {
+        ...item,
+        bbox: mapSubBboxToFullImage(item.bbox, parentRegion),
+      };
+    }
+    let fallbackBbox: MenuDishBbox;
+    if (orientation === 'vertical') {
+      // Japanese vertical menu: right-to-left columns
+      const colWidth = Math.min(18, Math.max(9, Math.floor(84 / total)));
+      const xPct = Math.max(
+        6,
+        Math.min(88, 86 - idx * ((80 / Math.max(1, total - 1)) || 0))
+      );
+      fallbackBbox = {
+        xPct: Math.round(xPct * 10) / 10,
+        yPct: 12 + (idx % 2) * 8,
+        wPct: colWidth,
+        hPct: 68,
+      };
+    } else {
+      // Horizontal or 2-column grid layout
+      const useTwoCols = total >= 6;
+      if (useTwoCols) {
+        const col = idx % 2;
+        const row = Math.floor(idx / 2);
+        const totalRows = Math.ceil(total / 2);
+        const rowStep = Math.min(15, 78 / Math.max(1, totalRows));
+        fallbackBbox = {
+          xPct: col === 0 ? 5 : 52,
+          yPct: Math.round((8 + row * rowStep) * 10) / 10,
+          wPct: 43,
+          hPct: Math.max(7, Math.round((rowStep - 2) * 10) / 10),
+        };
+      } else {
+        const rowStep = Math.min(16, 80 / Math.max(1, total));
+        fallbackBbox = {
+          xPct: 8,
+          yPct: Math.round((8 + idx * rowStep) * 10) / 10,
+          wPct: 84,
+          hPct: Math.max(8, Math.round((rowStep - 2) * 10) / 10),
+        };
+      }
+    }
+    return {
+      ...item,
+      bbox: mapSubBboxToFullImage(fallbackBbox, parentRegion),
+    };
+  });
+}
+
+/**
+ * 拍照菜單視覺辨識（Gemini Vision — 支援手寫字、直書縦書き、多欄複雜菜單，並回傳每道菜在照片上的 2D 座標 box2d）
  */
 export async function analyzeMenuPhotoWithGemini(params: {
   imageDataUrl: string;
   targetLang: LanguageCode;
   geminiApiKey: string;
   geminiModel?: string;
+  parentRegion?: MenuDishBbox;
 }): Promise<{ title: string; items: MenuDishItem[] } | null> {
   const cleanKey = params.geminiApiKey.trim();
   if (!cleanKey || !params.imageDataUrl.startsWith('data:image/')) return null;
@@ -715,7 +810,7 @@ export async function analyzeMenuPhotoWithGemini(params: {
   const langCfg = LANGUAGES[params.targetLang];
   const model = params.geminiModel || 'gemini-2.5-flash';
 
-  const prompt = `你是一位專業的${langCfg.countryName}餐廳菜單翻譯助手。請仔細辨識這張菜單照片中實際出現的所有餐點／飲品項目（包含橫書或直書縦書き），並逐一翻譯為台灣繁體中文。切勿編造照片中沒有的菜名！
+  const prompt = `你是一位專業的${langCfg.countryName}餐廳菜單翻譯助手。請仔細辨識這張菜單照片中實際出現的所有餐點／飲品項目（包含橫書或直書縦書き），逐一翻譯為台灣繁體中文，並標出每道菜在照片上的位置座標 box2d ([ymin, xmin, ymax, xmax]，範圍 0~1000)。切勿編造照片中沒有的菜名！
 請嚴格只回傳 JSON 物件：
 {
   "title": "照片中的餐廳或菜單分類標題（繁體中文）",
@@ -726,7 +821,8 @@ export async function analyzeMenuPhotoWithGemini(params: {
       "romanization": "外文發音或羅馬拼音",
       "descriptionZh": "食材、口味或料理方式簡短說明",
       "priceForeign": 數字金額（若照片上有標價請填純數字，無標價填 null）,
-      "dietaryWarning": "若含牛肉/豬肉/生食/花生/甲殼類/辣味/酒精請標註，無則填 null"
+      "dietaryWarning": "若含牛肉/豬肉/生食/花生/甲殼類/辣味/酒精請標註，無則填 null",
+      "box2d": [ymin, xmin, ymax, xmax]
     }
   ]
 }`;
@@ -765,11 +861,30 @@ export async function analyzeMenuPhotoWithGemini(params: {
     const parsed = JSON.parse(rawText.replace(/^```json\s*/i, '').replace(/```$/i, '').trim());
     if (!parsed || !Array.isArray(parsed.items)) return null;
     const now = Date.now();
-    const items: MenuDishItem[] = parsed.items
+    const rawItems: MenuDishItem[] = parsed.items
       .filter((it: Record<string, unknown>) => it && typeof it.originalName === 'string')
       .map((it: Record<string, unknown>, idx: number) => {
         const orig = String(it.originalName).trim();
         const zh = String(it.translatedZh || it.originalName).trim();
+        let bbox: MenuDishBbox | undefined;
+        if (Array.isArray(it.box2d) && it.box2d.length === 4) {
+          const [ymin, xmin, ymax, xmax] = it.box2d.map((n) => Number(n));
+          if (
+            Number.isFinite(ymin) &&
+            Number.isFinite(xmin) &&
+            Number.isFinite(ymax) &&
+            Number.isFinite(xmax) &&
+            ymax > ymin &&
+            xmax > xmin
+          ) {
+            bbox = {
+              xPct: Math.max(0, Math.min(95, Math.round((xmin / 10) * 10) / 10)),
+              yPct: Math.max(0, Math.min(95, Math.round((ymin / 10) * 10) / 10)),
+              wPct: Math.max(8, Math.min(100, Math.round(((xmax - xmin) / 10) * 10) / 10)),
+              hPct: Math.max(5, Math.min(100, Math.round(((ymax - ymin) / 10) * 10) / 10)),
+            };
+          }
+        }
         return {
           id: `dish-${now}-${idx}`,
           originalName: orig,
@@ -783,9 +898,15 @@ export async function analyzeMenuPhotoWithGemini(params: {
           dietaryWarning: it.dietaryWarning
             ? String(it.dietaryWarning).trim()
             : detectDishDietaryWarning(`${orig} ${zh}`),
+          bbox,
           quantity: 0,
         };
       });
+    const items = ensureMenuDishesHaveBboxes(
+      rawItems,
+      'horizontal',
+      params.parentRegion
+    );
     return {
       title:
         typeof parsed.title === 'string' && parsed.title.trim()
@@ -801,12 +922,15 @@ export async function analyzeMenuPhotoWithGemini(params: {
 }
 
 /**
- * 將圖片進行高對比文字強化預處理，大幅提升瀏覽器內建 Tesseract OCR 對日韓外文菜單的辨識準確率
+ * 將圖片進行高對比文字強化預處理，並同時回傳強化後的尺寸 (width, height)，以便精準換算 Tesseract 的 bbox 座標百分比
  */
-async function preprocessMenuImageForOcr(imageDataUrl: string): Promise<string> {
+async function preprocessMenuImageForOcr(
+  imageDataUrl: string
+): Promise<{ dataUrl: string; width: number; height: number }> {
   return new Promise((resolve) => {
     const img = new Image();
-    img.onerror = () => resolve(imageDataUrl);
+    img.onerror = () =>
+      resolve({ dataUrl: imageDataUrl, width: 1000, height: 1000 });
     img.onload = () => {
       // Upscale small web menu images so characters are at least 30px tall
       const maxDim = Math.max(img.width || 1, img.height || 1);
@@ -818,7 +942,7 @@ async function preprocessMenuImageForOcr(imageDataUrl: string): Promise<string> 
       canvas.height = h;
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        resolve(imageDataUrl);
+        resolve({ dataUrl: imageDataUrl, width: w, height: h });
         return;
       }
       ctx.fillStyle = '#FFFFFF';
@@ -843,7 +967,11 @@ async function preprocessMenuImageForOcr(imageDataUrl: string): Promise<string> 
       } catch {
         // Ignore cross-origin canvas taint
       }
-      resolve(canvas.toDataURL('image/jpeg', 0.92));
+      resolve({
+        dataUrl: canvas.toDataURL('image/jpeg', 0.92),
+        width: w,
+        height: h,
+      });
     };
     img.src = imageDataUrl;
   });
@@ -965,14 +1093,100 @@ export function cleanOcrMenuLines(rawText: string): string[] {
   return Array.from(new Set(validLines)).slice(0, 24);
 }
 
+interface TesseractRawLine {
+  text?: string;
+  bbox?: { x0: number; y0: number; x1: number; y1: number };
+}
+
+/**
+ * 從 Tesseract 辨識結果中提取每一行文字與其精準影像座標 (bbox 0~100%)
+ */
+function extractCleanedLinesWithBbox(
+  tessData: { text?: string; lines?: TesseractRawLine[] } | undefined,
+  imgWidth: number,
+  imgHeight: number
+): Array<{ text: string; bbox?: MenuDishBbox }> {
+  const w = Math.max(1, imgWidth);
+  const h = Math.max(1, imgHeight);
+  const rawLines = Array.isArray(tessData?.lines) ? tessData.lines : [];
+  const results: Array<{ text: string; bbox?: MenuDishBbox }> = [];
+  const seen = new Set<string>();
+
+  if (rawLines.length > 0) {
+    for (const rl of rawLines) {
+      const cleanedParts = cleanOcrMenuLines(rl.text || '');
+      if (cleanedParts.length === 0) continue;
+
+      let baseBbox: MenuDishBbox | undefined;
+      if (
+        rl.bbox &&
+        typeof rl.bbox.x0 === 'number' &&
+        typeof rl.bbox.y0 === 'number' &&
+        typeof rl.bbox.x1 === 'number' &&
+        typeof rl.bbox.y1 === 'number' &&
+        rl.bbox.x1 > rl.bbox.x0 &&
+        rl.bbox.y1 > rl.bbox.y0
+      ) {
+        const xPct = Math.max(0, Math.min(95, (rl.bbox.x0 / w) * 100));
+        const yPct = Math.max(0, Math.min(95, (rl.bbox.y0 / h) * 100));
+        const wPct = Math.max(
+          8,
+          Math.min(100 - xPct, ((rl.bbox.x1 - rl.bbox.x0) / w) * 100)
+        );
+        const hPct = Math.max(
+          4.5,
+          Math.min(100 - yPct, ((rl.bbox.y1 - rl.bbox.y0) / h) * 100)
+        );
+        baseBbox = {
+          xPct: Math.round(xPct * 10) / 10,
+          yPct: Math.round(yPct * 10) / 10,
+          wPct: Math.round(wPct * 10) / 10,
+          hPct: Math.round(hPct * 10) / 10,
+        };
+      }
+
+      // If a horizontal line split into multiple dishes (e.g. left dish + right dish), split the horizontal bbox proportionally!
+      const partCount = cleanedParts.length;
+      cleanedParts.forEach((part, idx) => {
+        if (seen.has(part)) return;
+        seen.add(part);
+        let subBbox = baseBbox;
+        if (baseBbox && partCount > 1) {
+          const sliceW = Math.max(10, baseBbox.wPct / partCount);
+          subBbox = {
+            xPct: Math.round((baseBbox.xPct + idx * sliceW) * 10) / 10,
+            yPct: baseBbox.yPct,
+            wPct: Math.round(sliceW * 10) / 10,
+            hPct: baseBbox.hPct,
+          };
+        }
+        results.push({ text: part, bbox: subBbox });
+      });
+    }
+  }
+
+  if (results.length === 0) {
+    const fallbackLines = cleanOcrMenuLines(tessData?.text || '');
+    for (const fl of fallbackLines) {
+      if (!seen.has(fl)) {
+        seen.add(fl);
+        results.push({ text: fl });
+      }
+    }
+  }
+
+  return results.slice(0, 24);
+}
+
 /**
  * 免 API Key！直接在瀏覽器內執行真實光學文字辨識 (Tesseract.js WASM OCR) ＋ Google GTX 逐道翻譯
- * 支援「橫排菜單 (horizontal)」與「日本傳統直書菜單 (vertical / 縦書き)」，並產出「📖 整張菜單中文全文翻譯總覽」！
+ * 支援「橫排菜單 (horizontal)」與「日本傳統直書菜單 (vertical / 縦書き)」，並保留每道菜在照片上的原位座標 (bbox)！
  */
 export async function analyzeMenuPhotoFreeOcr(params: {
   imageDataUrl: string;
   targetLang: LanguageCode;
   orientation?: 'horizontal' | 'vertical';
+  parentRegion?: MenuDishBbox;
   onProgress?: (statusText: string, pct: number) => void;
 }): Promise<{
   title: string;
@@ -982,17 +1196,23 @@ export async function analyzeMenuPhotoFreeOcr(params: {
 }> {
   const langCfg = LANGUAGES[params.targetLang];
   params.onProgress?.('🔍 正在強化菜單影像對比與清晰度...', 12);
-  const enhancedUrl = await preprocessMenuImageForOcr(params.imageDataUrl);
+  const {
+    dataUrl: enhancedUrl,
+    width: imgW,
+    height: imgH,
+  } = await preprocessMenuImageForOcr(params.imageDataUrl);
 
   const tessMap = TESSERACT_LANG_MAP[params.targetLang] || { horiz: 'eng' };
+  let effectiveOrient: 'horizontal' | 'vertical' =
+    params.orientation === 'vertical' ? 'vertical' : 'horizontal';
   const tessLang =
-    params.orientation === 'vertical' && tessMap.vert
+    effectiveOrient === 'vertical' && tessMap.vert
       ? tessMap.vert
       : tessMap.horiz;
 
   params.onProgress?.(
     `📖 正在載入【${langCfg.flag} ${langCfg.name}${
-      params.orientation === 'vertical' ? '・直書縦書き' : '・橫書'
+      effectiveOrient === 'vertical' ? '・直書縦書き' : '・橫書'
     }】OCR 辨識模型...`,
     25
   );
@@ -1003,7 +1223,7 @@ export async function analyzeMenuPhotoFreeOcr(params: {
       if (m && typeof m.progress === 'number') {
         const pct = Math.min(78, Math.round(25 + m.progress * 53));
         params.onProgress?.(
-          `🔍 正在掃描照片中的${langCfg.name}菜單文字 (${Math.round(m.progress * 100)}%)...`,
+          `🔍 正在掃描照片中的${langCfg.name}菜單文字與座標 (${Math.round(m.progress * 100)}%)...`,
           pct
         );
       }
@@ -1011,29 +1231,37 @@ export async function analyzeMenuPhotoFreeOcr(params: {
   });
 
   let rawOcrText = (result?.data?.text || '').trim();
-  let cleanedLines = cleanOcrMenuLines(rawOcrText);
+  let lineEntries = extractCleanedLinesWithBbox(
+    result?.data as { text?: string; lines?: TesseractRawLine[] },
+    imgW,
+    imgH
+  );
 
   // Smart Auto-Fallback for Japanese Vertical Menus: if horizontal scan found < 2 clean lines on a Japanese menu, automatically try vertical (`jpn_vert`)!
   if (
     params.targetLang === 'ja' &&
     params.orientation !== 'vertical' &&
-    cleanedLines.length < 2 &&
+    lineEntries.length < 2 &&
     tessMap.vert
   ) {
     params.onProgress?.(
       '↕️ 偵測到可能為日本直排菜單（縦書き），自動切換直書模型重掃中...',
       60
     );
-    result = await Tesseract.recognize(enhancedUrl, tessMap.vert);
-    const vertText = (result?.data?.text || '').trim();
-    const vertLines = cleanOcrMenuLines(vertText);
-    if (vertLines.length > cleanedLines.length) {
-      rawOcrText = vertText;
-      cleanedLines = vertLines;
+    const vertResult = await Tesseract.recognize(enhancedUrl, tessMap.vert);
+    const vertEntries = extractCleanedLinesWithBbox(
+      vertResult?.data as { text?: string; lines?: TesseractRawLine[] },
+      imgW,
+      imgH
+    );
+    if (vertEntries.length > lineEntries.length) {
+      rawOcrText = (vertResult?.data?.text || '').trim();
+      lineEntries = vertEntries;
+      effectiveOrient = 'vertical';
     }
   }
 
-  if (cleanedLines.length === 0) {
+  if (lineEntries.length === 0) {
     return {
       title: `${langCfg.flag} 實拍菜單辨識`,
       items: [],
@@ -1043,13 +1271,24 @@ export async function analyzeMenuPhotoFreeOcr(params: {
   }
 
   params.onProgress?.(
-    `🌐 已從照片擷取 ${cleanedLines.length} 行菜單內容，正在翻譯為繁體中文...`,
+    `🌐 已從照片定位出 ${lineEntries.length} 道菜單文字，正在原位翻譯為繁體中文...`,
     88
   );
 
-  const items = await parseAndTranslateMenuLinesFree(
-    cleanedLines.join('\n'),
+  const translatedItems = await parseAndTranslateMenuLinesFree(
+    lineEntries.map((e) => e.text).join('\n'),
     params.targetLang
+  );
+
+  const itemsWithRawBbox: MenuDishItem[] = translatedItems.map((it, idx) => ({
+    ...it,
+    bbox: lineEntries[idx]?.bbox,
+  }));
+
+  const items = ensureMenuDishesHaveBboxes(
+    itemsWithRawBbox,
+    effectiveOrient,
+    params.parentRegion
   );
 
   const fullTranslatedSummaryZh = items
@@ -1061,14 +1300,132 @@ export async function analyzeMenuPhotoFreeOcr(params: {
     )
     .join('\n');
 
-  params.onProgress?.('✅ 菜單中文翻譯完成！', 100);
+  params.onProgress?.('✅ 菜單原位中文翻譯完成！', 100);
 
   return {
-    title: `${langCfg.flag} 實拍菜單中文翻譯 (${items.length} 項)`,
+    title: `${langCfg.flag} 實拍菜單中文對照 (${items.length} 項)`,
     items,
     rawOcrText,
     fullTranslatedSummaryZh,
   };
+}
+
+/**
+ * 🖼️ 生成一份「全新對應中文版菜單照片」(DataURL)：
+ * 直接將原菜單照片上的每一道外文菜名原位覆蓋為「① 繁體中文菜名 ＋ 外幣/台幣價格標籤」，
+ * 讓使用者不用上下來回找，直接看這張新產出的中文菜單圖就知道哪個位置是什麼菜！
+ */
+export async function renderTranslatedMenuCanvasDataUrl(params: {
+  imageDataUrl: string;
+  items: MenuDishItem[];
+  lang: LanguageCode;
+  rateToTwd: number;
+  orientation?: 'horizontal' | 'vertical';
+}): Promise<string> {
+  return new Promise((resolve) => {
+    if (!params.imageDataUrl) {
+      resolve('');
+      return;
+    }
+    const img = new Image();
+    img.onerror = () => resolve(params.imageDataUrl);
+    img.onload = () => {
+      const w = Math.max(600, img.width || 1000);
+      const h = Math.max(450, img.height || 800);
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(params.imageDataUrl);
+        return;
+      }
+
+      // 1. Draw original menu image as base
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const langCfg = LANGUAGES[params.lang] || LANGUAGES.ja;
+      const positioned = ensureMenuDishesHaveBboxes(
+        params.items,
+        params.orientation || 'horizontal'
+      );
+
+      // 2. Paint high-contrast Traditional Chinese translation card directly over each dish's bbox position!
+      positioned.forEach((dish, idx) => {
+        const b = dish.bbox;
+        if (!b) return;
+        const bx = Math.round((b.xPct / 100) * w);
+        const by = Math.round((b.yPct / 100) * h);
+        const bw = Math.max(Math.round(w * 0.16), Math.round((b.wPct / 100) * w));
+        const bh = Math.max(Math.round(h * 0.052), Math.round((b.hPct / 100) * h));
+
+        // Rounded cream card covering the foreign text in-place
+        const radius = Math.min(14, Math.round(bh * 0.25));
+        ctx.save();
+        ctx.fillStyle = 'rgba(255, 253, 248, 0.95)';
+        ctx.strokeStyle = '#C48E63';
+        ctx.lineWidth = Math.max(2, Math.round(w * 0.0025));
+
+        ctx.beginPath();
+        ctx.moveTo(bx + radius, by);
+        ctx.lineTo(bx + bw - radius, by);
+        ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + radius);
+        ctx.lineTo(bx + bw, by + bh - radius);
+        ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - radius, by + bh);
+        ctx.lineTo(bx + radius, by + bh);
+        ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - radius);
+        ctx.lineTo(bx, by + radius);
+        ctx.quadraticCurveTo(bx, by, bx + radius, by);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Number badge pill on left of box
+        const badgeW = Math.max(24, Math.min(36, Math.round(bh * 0.72)));
+        ctx.fillStyle = '#F2CA62';
+        ctx.fillRect(bx + 3, by + 3, badgeW, bh - 6);
+        ctx.fillStyle = '#2D251E';
+        const numFontSize = Math.max(12, Math.min(20, Math.round(bh * 0.42)));
+        ctx.font = `900 ${numFontSize}px "Zen Maru Gothic", "PingFang TC", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(idx + 1), bx + 3 + badgeW / 2, by + bh / 2);
+
+        // Traditional Chinese dish name + NT$ price inside box
+        const twd =
+          dish.priceForeign && params.rateToTwd
+            ? `NT$${Math.round(dish.priceForeign * params.rateToTwd)}`
+            : '';
+        const priceLabel = dish.priceForeign
+          ? ` ${langCfg.currencySymbol}${dish.priceForeign}${twd ? `(${twd})` : ''}`
+          : '';
+        const fullText = `${dish.translatedZh}${priceLabel}`;
+
+        const availW = Math.max(40, bw - badgeW - 14);
+        const fontSize = Math.max(
+          13,
+          Math.min(
+            26,
+            Math.floor(Math.min(bh * 0.48, (availW / Math.max(4, fullText.length)) * 1.15))
+          )
+        );
+        ctx.font = `900 ${fontSize}px "Zen Maru Gothic", "PingFang TC", sans-serif`;
+        ctx.fillStyle = '#2D251E';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(
+          fullText,
+          bx + badgeW + 9,
+          by + bh / 2,
+          availW
+        );
+        ctx.restore();
+      });
+
+      resolve(canvas.toDataURL('image/jpeg', 0.92));
+    };
+    img.src = params.imageDataUrl;
+  });
 }
 
 /**

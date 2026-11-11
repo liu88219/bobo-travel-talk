@@ -74,6 +74,13 @@ export interface LiveSubtitleSegment {
   updatedAt: number;
 }
 
+export interface MenuDishBbox {
+  xPct: number;
+  yPct: number;
+  wPct: number;
+  hPct: number;
+}
+
 export interface MenuDishItem {
   id: string;
   originalName: string;
@@ -82,6 +89,8 @@ export interface MenuDishItem {
   descriptionZh?: string;
   priceForeign?: number;
   dietaryWarning?: string;
+  /** 該道菜在原菜單照片上的位置百分比 (0~100)，用於像 iPhone 相機一樣原位覆蓋中文或產生對照圖 */
+  bbox?: MenuDishBbox;
   quantity: number;
 }
 

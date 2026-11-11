@@ -21,6 +21,8 @@ import {
   detectDishDietaryWarning,
   extractRestaurantNameFromInput,
   searchRestaurantMenuOnline,
+  mapSubBboxToFullImage,
+  ensureMenuDishesHaveBboxes,
 } from '../services/translatorEngine';
 
 describe('BoboTalk Cloud Sync & Translator Engine', () => {
@@ -171,5 +173,36 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     expect(menuRes.items.length).toBeGreaterThanOrEqual(5);
     expect(menuRes.items[0].originalName).toContain('とんこつラーメン');
     expect(menuRes.googleMapsUrl).toContain('google.com/maps');
+  });
+
+  it('maps sub-region OCR bounding boxes back to full menu image coordinates and ensures fallback bboxes', () => {
+    const mapped = mapSubBboxToFullImage(
+      { xPct: 10, yPct: 20, wPct: 50, hPct: 10 },
+      { xPct: 20, yPct: 30, wPct: 60, hPct: 40 }
+    );
+    expect(mapped.xPct).toBeCloseTo(26, 1);
+    expect(mapped.yPct).toBeCloseTo(38, 1);
+    expect(mapped.wPct).toBeCloseTo(30, 1);
+    expect(mapped.hPct).toBeCloseTo(4, 1);
+
+    const itemsWithFallback = ensureMenuDishesHaveBboxes([
+      {
+        id: 'dish-1',
+        originalName: '親子丼',
+        translatedZh: '親子丼（雞肉滑蛋蓋飯）',
+        descriptionZh: '滑嫩雞蛋與雞肉蓋飯',
+        quantity: 0,
+      },
+      {
+        id: 'dish-2',
+        originalName: 'カツ丼',
+        translatedZh: '炸豬排滑蛋蓋飯',
+        descriptionZh: '酥脆炸豬排與滑蛋',
+        quantity: 0,
+      },
+    ]);
+    expect(itemsWithFallback[0].bbox).toBeDefined();
+    expect(itemsWithFallback[1].bbox).toBeDefined();
+    expect(itemsWithFallback[1].bbox!.yPct).toBeGreaterThan(itemsWithFallback[0].bbox!.yPct);
   });
 });

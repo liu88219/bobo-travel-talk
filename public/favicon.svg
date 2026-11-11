@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <filter id="crayon" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.62" numOctaves="4" seed="7" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.9" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="#D8D3C5"/>
+  <!-- Quokka bare caramel mochi silhouette with close-set crown ears and no mouth -->
+  <g filter="url(#crayon)">
+    <path d="M 41 36 C 36 22, 20 26, 23 41 C 16 49, 15 66, 22 76 C 18 88, 19 104, 28 108 C 36 111, 50 111, 58 108 C 66 104, 65 88, 60 76 C 67 66, 66 49, 59 41 C 62 26, 46 22, 41 36 Z" fill="#C99661"/>
+    <circle cx="36" cy="49" r="2.6" fill="#171210"/>
+    <circle cx="46" cy="49" r="2.6" fill="#171210"/>
+    <ellipse cx="41" cy="59" rx="5.5" ry="6.6" fill="#171210"/>
+    <!-- Red Passport & Butter Yellow Ticket -->
+    <rect x="33" y="72" width="16" height="20" rx="2.5" fill="#C83D33"/>
+    <rect x="36" y="67" width="10" height="7" rx="1.5" fill="#F2CA62"/>
+    <circle cx="32" cy="81" r="4" fill="#171210"/>
+    <circle cx="50" cy="81" r="4" fill="#171210"/>
+    <ellipse cx="26" cy="107" rx="4" ry="9" transform="rotate(-22 26 107)" fill="#171210"/>
+    <ellipse cx="56" cy="107" rx="4" ry="9" transform="rotate(22 56 107)" fill="#171210"/>
+  </g>
+  <!-- BOBO on wooden stool holding retro mic -->
+  <g filter="url(#crayon)">
+    <rect x="76" y="96" width="38" height="6" rx="2" fill="#785634"/>
+    <rect x="80" y="100" width="6" height="14" rx="2" fill="#785634"/>
+    <rect x="104" y="100" width="6" height="14" rx="2" fill="#785634"/>
+    <path d="M 85 45 C 77 39, 73 48, 78 56 C 74 64, 74 82, 83 92 C 88 96, 102 96, 107 92 C 116 82, 116 64, 112 56 C 117 48, 113 39, 105 45 C 99 44, 91 44, 85 45 Z" fill="#FFFFFF"/>
+    <circle cx="91" cy="57" r="2.2" fill="#171210"/>
+    <circle cx="100" cy="57" r="2.2" fill="#171210"/>
+    <path d="M 95.5 61 L 95.5 64.5 M 90.5 64.4 Q 93 67.8 95.5 64.4 Q 98 67.8 100.5 64.4" fill="none" stroke="#171210" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Retro Microphone -->
+    <rect x="89" y="75" width="4" height="11" rx="2" transform="rotate(-15 91 80)" fill="#F2CA62"/>
+    <circle cx="89" cy="72" r="5" fill="#C83D33"/>
+  </g>
+</svg>

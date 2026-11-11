@@ -1,0 +1,30 @@
+{
+  "name": "bobo-travel-talk",
+  "private": true,
+  "version": "1.0.0",
+  "description": "BoboTalk — Quokka & BOBO 的出國即時錄音翻譯蒟蒻 × 180° 面對面對講機 × 拍照菜單點餐卡 × 離線手指大字卡 × 匯率退稅小幫手 PWA",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "lucide-react": "^0.454.0",
+    "lz-string": "^1.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.4"
+  }
+}

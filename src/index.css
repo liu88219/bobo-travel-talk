@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body {
+    background-color: #ECE8DF;
+    color: #2D251E;
+    font-family: 'Zen Maru Gothic', 'Quicksand', 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.75;
+  }
+  70% {
+    transform: scale(1.18);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.18);
+    opacity: 0;
+  }
+}
+
+.recording-ring {
+  animation: pulse-ring 1.6s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+}

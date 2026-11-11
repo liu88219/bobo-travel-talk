@@ -1,0 +1,16 @@
+{
+  "name": "BoboTalk — Quokka & BOBO 出國即時錄音翻譯蒟蒻",
+  "short_name": "BoboTalk",
+  "description": "180° 面對面對講機 × 隨身連續收音字幕 × 拍照菜單點餐卡 × 離線手指大字卡 × 匯率退稅小幫手",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ECE8DF",
+  "theme_color": "#ECE8DF",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "./apple-touch-icon.png?v=1", "sizes": "180x180", "type": "image/png" },
+    { "src": "./icon-192.png?v=1", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icon-512.png?v=1", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

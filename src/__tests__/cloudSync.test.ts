@@ -23,6 +23,9 @@ import {
   searchRestaurantMenuOnline,
   mapSubBboxToFullImage,
   ensureMenuDishesHaveBboxes,
+  normalizeRestaurantQueryForLocalSearch,
+  extractMenuUrlsFromSearchMarkdown,
+  extractRealMenuDishesFromWebMarkdown,
 } from '../services/translatorEngine';
 
 describe('BoboTalk Cloud Sync & Translator Engine', () => {
@@ -204,5 +207,28 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     expect(itemsWithFallback[0].bbox).toBeDefined();
     expect(itemsWithFallback[1].bbox).toBeDefined();
     expect(itemsWithFallback[1].bbox!.yPct).toBeGreaterThan(itemsWithFallback[0].bbox!.yPct);
+  });
+
+  it('normalizes Taiwanese restaurant search queries and parses real menu items & prices from web search markdown', () => {
+    expect(normalizeRestaurantQueryForLocalSearch('五代目花山烏龍麵', 'ja')).toBe('五代目花山うどん');
+    expect(normalizeRestaurantQueryForLocalSearch('挽肉與米', 'ja')).toBe('挽肉と米');
+
+    const sampleSearchMd = `
+      ### [お品書き | 花山うどん 日本橋店](https://www.hanayamaudon.co.jp/nihonbashi/menu/)
+      * ざる（醤油つゆ）鬼ひも川／うどん 890円
+      * 鬼釜（群馬県産 麦豚使用）鬼ひも川 1,300円
+      [鶏白湯Sobaの画像 鶏白湯Soba 1,200円 ★ 4.6 (5件)](https://map.yahoo.co.jp/place)
+      ## [330円.](https://www.umenu.jp/menus/435.html)
+      【二階建て生ほたて(一貫)】
+    `;
+
+    const urls = extractMenuUrlsFromSearchMarkdown(sampleSearchMd);
+    expect(urls[0]).toBe('https://www.umenu.jp/menus/435.html');
+    expect(urls[1]).toBe('https://www.hanayamaudon.co.jp/nihonbashi/menu/');
+
+    const dishes = extractRealMenuDishesFromWebMarkdown(sampleSearchMd, 'ja');
+    expect(dishes.some((d) => d.originalName.includes('二階建て生ほたて') && d.priceForeign === 330)).toBe(true);
+    expect(dishes.some((d) => d.originalName.includes('鶏白湯Soba') && d.priceForeign === 1200)).toBe(true);
+    expect(dishes.some((d) => d.originalName.includes('鬼釜') && d.priceForeign === 1300)).toBe(true);
   });
 });

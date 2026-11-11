@@ -1859,10 +1859,437 @@ async function searchRestaurantMenuWithGeminiGrounding(params: {
 }
 
 /**
+ * 將台灣旅客常輸入的繁體中文餐廳名／料理詞（例如：「挽肉與米」、「五代目花山烏龍麵」、「利久牛舌」、「敘敘苑」、「淺草今半」）
+ * 自動正規化為當地搜尋引擎最容易命中的外文關鍵字！
+ */
+export function normalizeRestaurantQueryForLocalSearch(
+  rawQuery: string,
+  targetLang: LanguageCode
+): string {
+  let out = rawQuery.trim();
+  if (!out) return '';
+  if (targetLang === 'ja') {
+    const jaReplacements: Array<[RegExp, string]> = [
+      [/烏龍麵/g, 'うどん'],
+      [/蕎麥麵/g, 'そば'],
+      [/拉麵/g, 'ラーメン'],
+      [/沾麵/g, 'つけ麺'],
+      [/迴轉壽司/g, '回転寿司'],
+      [/壽司/g, '寿司'],
+      [/燒肉|烤肉/g, '焼肉'],
+      [/牛舌/g, ' 牛たん'],
+      [/炸豬排|豬排/g, 'とんかつ'],
+      [/炸牛排/g, '牛かつ'],
+      [/壽喜燒/g, 'すき焼き'],
+      [/涮涮鍋/g, 'しゃぶしゃぶ'],
+      [/鰻魚飯|鰻魚/g, 'うなぎ'],
+      [/串燒/g, '焼き鳥'],
+      [/串炸/g, '串かつ'],
+      [/鬆餅/g, 'パンケーキ'],
+      [/千層蛋糕|蛋糕/g, 'ケーキ'],
+      [/敘敘/g, '叙々'],
+      [/敘/g, '叙'],
+      [/淺/g, '浅'],
+      [/與/g, 'と'],
+      [/麵/g, '麺'],
+      [/雞/g, '鶏'],
+      [/燒/g, '焼'],
+      [/鐵/g, '鉄'],
+      [/澤/g, '沢'],
+      [/廣/g, '広'],
+      [/濱/g, '浜'],
+      [/邊/g, '辺'],
+    ];
+    for (const [pattern, rep] of jaReplacements) {
+      out = out.replace(pattern, rep);
+    }
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 從搜尋引擎回傳的 Markdown 結果中，自動挑選出可進一步抓取完整菜單的官方／食評菜單網址
+ * （優先順序：umenu.jp 結構化菜單庫 > 店家官網 /menu /oshinagaki > 楽天ぐるなび r.gnavi.co.jp）
+ */
+export function extractMenuUrlsFromSearchMarkdown(searchMd: string): string[] {
+  const urls: string[] = [];
+  const regex = /\((https?:\/\/[^\s)"<>]+)\)/g;
+  let m: RegExpExecArray | null;
+  const blockedDomains = [
+    'yahoo.co.jp',
+    'tabelog.com',
+    'hotpepper.jp',
+    'hitosara.com',
+    'retty.me',
+    'google.',
+    'youtube.',
+    'instagram.',
+    'twitter.',
+    'x.com',
+    'facebook.',
+    'bing.com',
+    'duckduckgo.com',
+    '.pdf',
+    '.jpg',
+    '.png',
+    '.svg',
+    'login',
+    'reserve',
+    'recruit',
+    'wikipedia.org',
+  ];
+
+  while ((m = regex.exec(searchMd)) !== null) {
+    let url = m[1];
+    // Unwrap DuckDuckGo uddg redirect URL if present
+    const uddgMatch = url.match(/[?&]uddg=([^&]+)/i);
+    if (uddgMatch && uddgMatch[1]) {
+      try {
+        url = decodeURIComponent(uddgMatch[1]);
+      } catch {
+        // Keep original
+      }
+    }
+    const lower = url.toLowerCase();
+    if (blockedDomains.some((bad) => lower.includes(bad))) {
+      continue;
+    }
+    if (
+      lower.includes('umenu.jp/menus/') ||
+      lower.includes('r.gnavi.co.jp/') ||
+      /\/(?:menu|food|oshinagaki|shinagaki|lunch|dinner|grand|special|course)/i.test(lower)
+    ) {
+      if (!urls.includes(url)) {
+        urls.push(url);
+      }
+    }
+  }
+
+  urls.sort((a, b) => {
+    const score = (u: string) =>
+      u.includes('umenu.jp/menus/') ? 0 : !u.includes('gnavi.co.jp') ? 1 : 2;
+    return score(a) - score(b);
+  });
+
+  return urls.slice(0, 2);
+}
+
+/**
+ * 從即時檢索到的搜尋結果與店家官方菜單頁 Markdown 中，精準解析出「真實外文菜名 ＋ 真實當地價格」！
+ * 支援：
+ * 1. umenu.jp 價格分組格式 (`## [330円.]` + `【二階建て生ほたて】`)
+ * 2. Yahoo! マップ 內嵌菜單卡片 (`[鶏白湯Sobaの画像 鶏白湯Soba 1,200円 ★ ...]`)
+ * 3. 店家官網 / ぐるなび / 食評摘要中的菜名與價格 (`* ざる（醤油つゆ） 890円`、`特上カルビ. 4,200円`、`칼국수 : 12,000원`)
+ */
+export function extractRealMenuDishesFromWebMarkdown(
+  md: string,
+  targetLang: LanguageCode
+): Array<{ originalName: string; priceForeign?: number }> {
+  if (!md || !md.trim()) return [];
+  const items: Array<{ originalName: string; priceForeign?: number }> = [];
+  const seen = new Set<string>();
+
+  const noiseRegex =
+    /(検索|マップ|食べログ|ぐるなび|ホットペッパー|件の|レビュー|口コミ|予算|営業時間|アクセス|予約|平均|税込価格|ページ|一覧|写真|画像|店舗|円〜|円～|以上|以下|未満|割引|クーポン|送料|無料|追加|変更|時間|ランチ営業|ディナー営業|調査|まとめ|ブログ|記事|サイト|公式|電話|住所|二人で|一人で|ついて|価格設定|値段や|ちなみに|お求めやす|バランス|秀逸|保存版|新商品|一番安|一番高|円大|お子様料金|小学生|キャンセル|チケット|放題コース|飲み放題|食べ放題メニュー|たった|異なり|料理のみ|税込み|税抜き|現在|以前|当時|並盛り|大盛り|特盛り|ハーフ|利用金額|カード可|席数|定休日)/i;
+
+  const validJaEndingFoodNoun =
+    /(?:そば|ソバ|ラテ|パフェ|ピッツァ|パスタ|サラダ|コロッケ|カフェ|フラッペ|マリネ|ソテー|天ぷら|いくら|うに|かに|えび|たこ|いか|たい|ぶり|あなご|まぐろ|とろ|カルビ|ハラミ|ロース|ホルモン|キムチ|チヂミ|ビビンバ|クッパ|盛合せ|盛り合わせ|握り|巻き|焼き|揚げ|煮込み|たたき|刺し|蒸し|出し|茶漬け|うどん|ラーメン|つけ麺|定食|丼|重|鍋|膳|セット|ステーキ|ハンバーグ|カレー|シチュー|ピザ|ケーキ|タルト|クレープ|ティラミス|コーヒー|ティー|茶|酒|ビール)$/i;
+
+  const addCandidate = (rawName: string, price?: number) => {
+    let name = rawName
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/\*\*/g, '')
+      .trim();
+
+    name = name
+      .replace(/^[\s・･·;；:：、,，.。/／\-|｜*#◎○●◇■□▼▲]+|[\s・･·;；:：、,，.。/／\-|｜*#]+$/g, '')
+      .replace(/^[(\[（【]+(?![^)\]）】]*[)\]）】])/, '')
+      .replace(/^(?:メニュー|価格|値段|料理|単品メニュー|注文|おすすめ|売れ筋|新着|名物|人気|定番)\s*/i, '')
+      .replace(/[.。,，:：・/／\s]*(?:1カット|1ピース|1ホール|お一人様|税込|税抜)\s*$/i, '')
+      .trim();
+
+    if (name.length < 2 || name.length > 28) return;
+    if (noiseRegex.test(name)) return;
+    if (/\d+$/.test(name)) return;
+
+    if (targetLang === 'ja') {
+      if (!/[ぁ-んァ-ヶ一-龠々ーA-Za-z]/.test(name)) return;
+      if (
+        /[はがをにへとでやもてい]$/.test(name) &&
+        !validJaEndingFoodNoun.test(name)
+      ) {
+        return;
+      }
+      if (price !== undefined && (price < 120 || price > 45000)) return;
+    } else if (targetLang === 'ko') {
+      if (!/[가-힣A-Za-z]/.test(name)) return;
+      if (price !== undefined && (price < 1000 || price > 250000)) return;
+    }
+
+    const key = name.replace(/[\s()（）【】[\]・･·]+/g, '').toLowerCase();
+    if (key.length < 2 || seen.has(key)) return;
+    seen.add(key);
+    items.push({ originalName: name, priceForeign: price });
+  };
+
+  // 1. umenu.jp structured price sections: ## [330円.] followed by 【二階建て生ほたて(一貫)】
+  let currentBucketPrice: number | undefined;
+  for (const line of md.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const bucketMatch = trimmed.match(/^##\s*\[?(\d{1,2},\d{3}|\d{3,5})円/);
+    if (bucketMatch) {
+      currentBucketPrice = Number.parseInt(bucketMatch[1].replace(/,/g, ''), 10);
+      continue;
+    }
+    if (trimmed.includes('【') && trimmed.includes('】')) {
+      const bracketRegex = /【([^【】]{2,26})】(?:\s*(?:\*\*)?(\d{1,2},\d{3}|\d{3,5})\s*(?:\*\*)?円)?/g;
+      let bm: RegExpExecArray | null;
+      while ((bm = bracketRegex.exec(trimmed)) !== null) {
+        const explicitPrice = bm[2]
+          ? Number.parseInt(bm[2].replace(/,/g, ''), 10)
+          : currentBucketPrice;
+        if (explicitPrice) {
+          addCandidate(bm[1], explicitPrice);
+        }
+      }
+    }
+  }
+
+  const cleanText = md.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\*\*/g, '');
+
+  // 2. Yahoo! マップ embedded menu cards: [鶏白湯Sobaの画像 鶏白湯Soba 1,200円 ★
+  const yahooMapRegex =
+    /\[([^[\]]+?)の画像\s+([^[\]]+?)\s+(?:〜)?(\d{1,2},\d{3}|\d{3,5})円/g;
+  let ym: RegExpExecArray | null;
+  while ((ym = yahooMapRegex.exec(cleanText)) !== null) {
+    addCandidate(ym[2], Number.parseInt(ym[3].replace(/,/g, ''), 10));
+  }
+
+  // 3. Markdown bullet / heading lines on official menu pages
+  for (const line of cleanText.split(/\r?\n/)) {
+    const lineS = line.trim();
+    if (targetLang === 'ja') {
+      const mLine = lineS.match(
+        /^(?:[*+-]|\d+\.|#{2,4})\s+(.+?)\s*(?:お一人様)?\s*[/／:：・\s]*(?:[￥¥]\s*(\d{1,2},\d{3}|\d{3,5})(?:\s*→\s*[￥¥]\s*(\d{1,2},\d{3}|\d{3,5}))?|(\d{1,2},\d{3}|\d{3,5})\s*円)/
+      );
+      if (mLine) {
+        const pStr = mLine[3] || mLine[2] || mLine[4];
+        if (pStr) {
+          addCandidate(mLine[1], Number.parseInt(pStr.replace(/,/g, ''), 10));
+        }
+      }
+    } else if (targetLang === 'ko') {
+      const mKo = lineS.match(
+        /^(?:[*+-]|\d+\.|#{2,4})?\s*([가-힣A-Za-z0-9\s()]{2,22}?)\s*[:：·\-]\s*(\d{1,3}(?:,\d{3})+|\d{4,6})\s*원/
+      );
+      if (mKo) {
+        addCandidate(mKo[1], Number.parseInt(mKo[2].replace(/,/g, ''), 10));
+      }
+    }
+  }
+
+  // 4. General inline dish + price pattern across search snippets
+  if (targetLang === 'ja') {
+    const jaInlineRegex =
+      /(?:^|[・･·;；。|\n\r]|\s)([【[][^】\]]{1,12}[】\]]\s*[ぁ-んァ-ヶ一-龠々ーA-Za-z0-9・＆&()（）\s]{0,20}|[ぁ-んァ-ヶ一-龠々ーA-Za-z][ぁ-んァ-ヶ一-龠々ーA-Za-z0-9・＆&()（）\s]{1,22}?)\s*(?:[.。,，:：・\s]+(?:1カット|1ピース|単品|お一人様))?\s*[.。,，:：・/／\s]*\s*(?:[￥¥]\s*(\d{1,2},\d{3}|\d{3,5})(?:\s*\(税込\)|\s*（税込）|\s*円)?|(\d{1,2},\d{3}|\d{3,5})\s*円)/g;
+    let jm: RegExpExecArray | null;
+    while ((jm = jaInlineRegex.exec(cleanText)) !== null) {
+      const dish = jm[1].trim();
+      if (/\d$/.test(dish)) continue;
+      const pStr = jm[2] || jm[3];
+      if (pStr) {
+        addCandidate(dish, Number.parseInt(pStr.replace(/,/g, ''), 10));
+      }
+    }
+  } else if (targetLang === 'ko') {
+    const koInlineRegex =
+      /([가-힣][가-힣A-Za-z0-9\s()]{1,18}?)\s*[:：·.]?\s*(\d{1,3}(?:,\d{3})+|\d{4,6})\s*원/g;
+    let km: RegExpExecArray | null;
+    while ((km = koInlineRegex.exec(cleanText)) !== null) {
+      const dish = km[1].trim();
+      if (/\d$/.test(dish)) continue;
+      addCandidate(dish, Number.parseInt(km[2].replace(/,/g, ''), 10));
+    }
+  } else {
+    const intlInlineRegex =
+      /([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÿ0-9\s'’&()-]{2,26}?)\s*[:：·\-]?\s*(?:[$€฿₫]\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)|(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s*(?:EUR|USD|THB|VND|฿|€|\$))/g;
+    let im: RegExpExecArray | null;
+    while ((im = intlInlineRegex.exec(cleanText)) !== null) {
+      const dish = im[1].trim();
+      const pStr = im[2] || im[3];
+      if (pStr) {
+        addCandidate(dish, Number.parseFloat(pStr.replace(/,/g, '')));
+      }
+    }
+  }
+
+  return items.slice(0, 12);
+}
+
+async function fetchJinaMarkdown(targetUrl: string, timeoutMs = 7500): Promise<string> {
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    const res = await fetch(`https://r.jina.ai/${targetUrl}`, {
+      signal: ctrl?.signal,
+      headers: {
+        Accept: 'text/plain',
+      },
+    });
+    if (!res.ok) return '';
+    return await res.text();
+  } catch {
+    return '';
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * 🌐 免 API Key！即時透過搜尋引擎（Yahoo! 検索 / Yahoo! マップ菜單卡 / DuckDuckGo）與店家官方菜單頁 (`umenu.jp` / 官網 `/menu` / ぐるなび)
+ * 抓取該餐廳在網路上的真實菜單品項與價格，並自動逐道翻譯成繁體中文！
+ */
+export async function scrapeLiveRestaurantMenuFromWeb(params: {
+  query: string;
+  targetLang: LanguageCode;
+  onProgress?: (statusText: string, pct: number) => void;
+}): Promise<{
+  items: MenuDishItem[];
+  discoveredOfficialUrl?: string;
+  normalizedQuery: string;
+}> {
+  const normalizedQuery = normalizeRestaurantQueryForLocalSearch(
+    params.query,
+    params.targetLang
+  );
+
+  const searchUrl =
+    params.targetLang === 'ja'
+      ? `https://search.yahoo.co.jp/search?p=${encodeURIComponent(
+          `${normalizedQuery} メニュー 価格 円`
+        )}`
+      : params.targetLang === 'ko'
+      ? `https://html.duckduckgo.com/html/?q=${encodeURIComponent(
+          `${normalizedQuery} 메뉴 가격 원`
+        )}`
+      : `https://html.duckduckgo.com/html/?q=${encodeURIComponent(
+          `${normalizedQuery} restaurant menu prices`
+        )}`;
+
+  params.onProgress?.(
+    `🌐 正在即時檢索「${normalizedQuery}」的線上真實菜單與價格...`,
+    45
+  );
+
+  let searchMd = await fetchJinaMarkdown(searchUrl, 8000);
+  if (!searchMd && params.targetLang === 'ja') {
+    const fallbackDdg = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(
+      `${normalizedQuery} メニュー 価格 円`
+    )}`;
+    searchMd = await fetchJinaMarkdown(fallbackDdg, 7000);
+  }
+
+  const candidateMenuUrls = extractMenuUrlsFromSearchMarkdown(searchMd);
+  const rawDishes: Array<{ originalName: string; priceForeign?: number }> = [];
+  const seenKeys = new Set<string>();
+
+  const pushUniqueDishes = (
+    list: Array<{ originalName: string; priceForeign?: number }>
+  ) => {
+    for (const item of list) {
+      const k = item.originalName
+        .replace(/[\s()（）【】[\]・･·]+/g, '')
+        .toLowerCase();
+      if (!seenKeys.has(k)) {
+        seenKeys.add(k);
+        rawDishes.push(item);
+      }
+    }
+  };
+
+  // 1. If we discovered an official menu page or umenu.jp structured menu, fetch it first for 100% pure menu items!
+  if (candidateMenuUrls.length > 0) {
+    params.onProgress?.(
+      `📖 已找到「${normalizedQuery}」線上菜單頁，正在擷取完整品項與價格...`,
+      68
+    );
+    const pageMd = await fetchJinaMarkdown(candidateMenuUrls[0], 6800);
+    if (pageMd) {
+      pushUniqueDishes(
+        extractRealMenuDishesFromWebMarkdown(pageMd, params.targetLang)
+      );
+    }
+  }
+
+  // 2. Also extract Yahoo! Map menu cards & Tabelog/Gurunavi/HotPepper menu snippets from the search result page
+  if (searchMd) {
+    pushUniqueDishes(
+      extractRealMenuDishesFromWebMarkdown(searchMd, params.targetLang)
+    );
+  }
+
+  // 3. If still < 4 items and there is a 2nd candidate menu URL, fetch it too
+  if (rawDishes.length < 4 && candidateMenuUrls.length > 1) {
+    const pageMd2 = await fetchJinaMarkdown(candidateMenuUrls[1], 6000);
+    if (pageMd2) {
+      pushUniqueDishes(
+        extractRealMenuDishesFromWebMarkdown(pageMd2, params.targetLang)
+      );
+    }
+  }
+
+  const topDishes = rawDishes.slice(0, 12);
+  if (topDishes.length === 0) {
+    return {
+      items: [],
+      discoveredOfficialUrl: candidateMenuUrls[0],
+      normalizedQuery,
+    };
+  }
+
+  params.onProgress?.(
+    `✨ 已抓取到 ${topDishes.length} 道真實餐點，正在翻譯為繁體中文...`,
+    85
+  );
+
+  const now = Date.now();
+  const translatedItems: MenuDishItem[] = await Promise.all(
+    topDishes.map(async (d, idx): Promise<MenuDishItem> => {
+      const cleanOrig = d.originalName.replace(/^[【[]|[】\]]$/g, '').trim();
+      const gtx = await translateViaGoogleGtx(
+        cleanOrig,
+        params.targetLang,
+        'zh-TW'
+      );
+      const translatedZh = gtx?.translated || cleanOrig;
+      return {
+        id: `web-dish-${now}-${idx}`,
+        originalName: cleanOrig,
+        translatedZh,
+        romanization: gtx?.romanization || undefined,
+        priceForeign: d.priceForeign,
+        dietaryWarning: detectDishDietaryWarning(
+          `${cleanOrig} ${translatedZh}`
+        ),
+        quantity: 0,
+      };
+    })
+  );
+
+  return {
+    items: translatedItems,
+    discoveredOfficialUrl: candidateMenuUrls[0],
+    normalizedQuery,
+  };
+}
+
+/**
  * 🔍 核心功能：輸入餐廳名稱或貼上 Google Maps 餐廳連結，自動抓取該店真實招牌菜單並翻譯成「店員指指點餐卡」！
- * 支援雙軌：
- * 1. 若有綁定 Gemini Key -> 直接啟動 Google Search Grounding 即時搜尋該店最新網路菜單
- * 2. 免 API Key -> 結合「22+ 各國必吃名店官方真實菜單庫」＋「OpenStreetMap 全球餐廳即時定位」＋「Wikipedia 招牌料理擷取與 Google GTX 即時翻譯」
+ * 支援三軌：
+ * 1. 台灣旅客必吃名店官方認證菜單庫（秒開、100% 精準官方價格與吃法介紹）
+ * 2. 若有綁定 Gemini Key -> 啟動 Google Search Grounding 即時搜尋該店最新網路菜單
+ * 3. 免 API Key 即時網路菜單爬蟲 -> 自動透過 Yahoo! マップ菜單卡、店家官網 `/menu`、`umenu.jp`、ぐるなび與 DuckDuckGo 抓取該店真實菜名與價格並翻譯為中文（絕不回傳假固定項目！）
  */
 export async function searchRestaurantMenuOnline(params: {
   query: string;
@@ -1873,17 +2300,27 @@ export async function searchRestaurantMenuOnline(params: {
 }): Promise<RestaurantMenuSearchResult> {
   const cleanName = extractRestaurantNameFromInput(params.query);
   if (!cleanName) {
-    throw new Error('請輸入要搜尋的餐廳名稱（例如：一蘭、鳥貴族、敘敘苑、阿夫利、淺草今半、橋村炸雞）');
+    throw new Error('請輸入要搜尋的餐廳名稱（例如：一蘭、挽肉與米、五代目花山烏龍麵、六歌仙、利久牛舌、敘敘苑、橋村炸雞）');
   }
 
   params.onProgress?.(`🔍 正在搜尋「${cleanName}」的餐廳資訊與官方菜單...`, 20);
 
   // 1. Check Curated Top Tourist Chains Database first (Instant & 100% Verified Official Prices!)
   const norm = cleanName.toLowerCase();
+  const normalizedLocal = normalizeRestaurantQueryForLocalSearch(
+    cleanName,
+    params.targetLang
+  ).toLowerCase();
+
   const curatedHit = POPULAR_RESTAURANT_MENUS.find((rest) =>
-    rest.keywords.some(
-      (kw) => norm.includes(kw.toLowerCase()) || kw.toLowerCase().includes(norm)
-    )
+    rest.keywords.some((kw) => {
+      const k = kw.toLowerCase();
+      return (
+        norm.includes(k) ||
+        normalizedLocal.includes(k) ||
+        (norm.length >= 2 && k.includes(norm))
+      );
+    })
   );
 
   // Lookup OpenStreetMap in parallel for real branch address & website
@@ -1920,7 +2357,7 @@ export async function searchRestaurantMenuOnline(params: {
   if (params.geminiApiKey && params.geminiApiKey.trim().length > 10) {
     params.onProgress?.(
       `🌐 正在透過 Gemini Google Search 即時檢索「${cleanName}」的線上菜單...`,
-      48
+      42
     );
     const geminiMenu = await searchRestaurantMenuWithGeminiGrounding({
       restaurantQuery: cleanName,
@@ -1934,33 +2371,27 @@ export async function searchRestaurantMenuOnline(params: {
     }
   }
 
-  // 3. Free Zero-Key Live Web Discovery: OpenStreetMap Nominatim + Wikipedia Signature Dishes + Cuisine Smart Matcher + Google GTX
-  params.onProgress?.(
-    `🗺️ 正在透過 OpenStreetMap 與線上食評檢索「${cleanName}」當地菜色...`,
-    55
-  );
-  const [osmInfo, wikiDishes] = await Promise.all([
+  // 3. Free Zero-Key Live Web Menu Crawler + OpenStreetMap + Wikipedia Signature Dishes
+  const [liveScraped, osmInfo, wikiDishes] = await Promise.all([
+    scrapeLiveRestaurantMenuFromWeb({
+      query: cleanName,
+      targetLang: params.targetLang,
+      onProgress: params.onProgress,
+    }),
     osmPromise,
     extractWikipediaSignatureDishes(cleanName, params.targetLang),
   ]);
 
   const langCfg = LANGUAGES[params.targetLang];
-  const localRestName = osmInfo?.localName || cleanName;
+  const localRestName =
+    osmInfo?.localName || liveScraped.normalizedQuery || cleanName;
   const combinedHint = `${cleanName} ${localRestName} ${osmInfo?.cuisine || ''}`;
 
-  // Match cuisine type (Sukiyaki, Kushikatsu, Sushi, Tonkatsu/Gyukatsu, Yakiniku, Udon/Soba, Ramen, etc.)
-  const cuisineTemplate =
-    CUISINE_FALLBACK_MENUS.find((c) => c.matchRegex.test(combinedHint)) || null;
-
   const now = Date.now();
-  const dynamicItems: MenuDishItem[] = [];
+  const dynamicItems: MenuDishItem[] = [...liveScraped.items];
 
-  // Translate any Wikipedia-extracted signature dishes for this specific restaurant
+  // Append any Wikipedia-extracted signature dishes not already in liveScraped
   if (wikiDishes.length > 0) {
-    params.onProgress?.(
-      `🍜 已擷取到「${cleanName}」招牌名物 (${wikiDishes.join('、')})，正在翻譯...`,
-      80
-    );
     const wikiTranslated = await Promise.all(
       wikiDishes.map(async (dishName, idx): Promise<MenuDishItem> => {
         const gtx = await translateViaGoogleGtx(dishName, params.targetLang, 'zh-TW');
@@ -1968,19 +2399,26 @@ export async function searchRestaurantMenuOnline(params: {
         return {
           id: `wiki-dish-${now}-${idx}`,
           originalName: dishName,
-          translatedZh: `【本店名物】${zh}`,
+          translatedZh: `【招牌名物】${zh}`,
           romanization: gtx?.romanization || undefined,
-          descriptionZh: `線上食評與維基百科記載之「${localRestName}」招牌代表餐點`,
+          descriptionZh: `線上食評記載之「${localRestName}」代表餐點`,
           dietaryWarning: detectDishDietaryWarning(`${dishName} ${zh}`),
           quantity: 0,
         };
       })
     );
-    dynamicItems.push(...wikiTranslated);
+    for (const wItem of wikiTranslated) {
+      if (!dynamicItems.some((d) => d.originalName === wItem.originalName)) {
+        dynamicItems.push(wItem);
+      }
+    }
   }
 
-  // Add cuisine-specific authentic dishes
-  if (cuisineTemplate) {
+  // Only if live web scraping found fewer than 2 items, check if the restaurant name matches a specific cuisine template (e.g. Sukiyaki, Kushikatsu, Sushi, Tonkatsu, Yakiniku, Udon, Ramen)
+  const cuisineTemplate =
+    CUISINE_FALLBACK_MENUS.find((c) => c.matchRegex.test(combinedHint)) || null;
+
+  if (dynamicItems.length < 2 && cuisineTemplate) {
     cuisineTemplate.items.forEach((it, idx) => {
       if (!dynamicItems.some((d) => d.originalName === it.originalName)) {
         dynamicItems.push({
@@ -1990,55 +2428,54 @@ export async function searchRestaurantMenuOnline(params: {
         });
       }
     });
-  } else {
-    // Translate the user's query into target language + provide universal restaurant ordering items
-    const gtxName = await translateViaGoogleGtx(
+  }
+
+  // If even after live web scraping + Wikipedia + cuisine matching there are 0 dishes (e.g. user entered a specific dish name directly in the search box!), translate the entered term directly without generating fake "最受歡迎/特色套餐" items!
+  if (dynamicItems.length === 0) {
+    const gtxDirect = await translateViaGoogleGtx(
       cleanName,
-      'zh-TW',
+      'auto',
       params.targetLang
     );
-    const foreignRestTitle = gtxName?.translated || cleanName;
-    const universalLines =
-      params.targetLang === 'ja'
-        ? [
-            `お店の一番人気おすすめメニュー 1500円`,
-            `${foreignRestTitle} 特製セット（定食） 1800円`,
-            `本日のランチ / 日替わりスペシャル 1280円`,
-            `生ビール / ウーロン茶 550円`,
-          ]
-        : params.targetLang === 'ko'
-        ? [
-            `대표 인기 메뉴 (베스트 추천) 16000원`,
-            `${foreignRestTitle} 스페셜 세트 22000원`,
-            `사이드 메뉴 추가 + 음료수 4000원`,
-          ]
-        : [
-            `Chef's #1 Signature Recommended Dish $22`,
-            `${foreignRestTitle} Special Combo Set $28`,
-            `House Drink / Sparkling Water $6`,
-          ];
-    const parsedUniversal = await parseAndTranslateMenuLinesFree(
-      universalLines.join('\n'),
-      params.targetLang
+    const foreignTerm = gtxDirect?.translated || localRestName;
+    const gtxBackZh = await translateViaGoogleGtx(
+      foreignTerm,
+      params.targetLang,
+      'zh-TW'
     );
-    dynamicItems.push(...parsedUniversal);
+    dynamicItems.push({
+      id: `direct-query-${now}`,
+      originalName: foreignTerm,
+      translatedZh: gtxBackZh?.translated || cleanName,
+      romanization: gtxBackZh?.romanization || gtxDirect?.romanization || undefined,
+      descriptionZh:
+        '未在公開網頁檢索到該店完整價目文字表；建議點上方「📍 開啟 Google Maps 菜單相簿」查看實拍菜單後直接截圖上傳翻譯！',
+      dietaryWarning: detectDishDietaryWarning(`${foreignTerm} ${cleanName}`),
+      quantity: 0,
+    });
   }
 
   const links = buildFoodPortalLinks(localRestName, params.targetLang);
-  params.onProgress?.('✅ 餐廳菜單與 Google Maps 菜單連結已就緒！', 100);
+  params.onProgress?.('✅ 餐廳真實菜單與 Google Maps 菜單連結已就緒！', 100);
 
   return {
     title: `${langCfg.flag} ${localRestName}${
-      cuisineTemplate ? `（${cuisineTemplate.cuisineLabel}）` : ' 精選菜單'
+      liveScraped.items.length > 0
+        ? `（網路實抓菜單 ${dynamicItems.length} 項）`
+        : cuisineTemplate
+        ? `（${cuisineTemplate.cuisineLabel}）`
+        : ' 線上菜單'
     }`,
-    lang: cuisineTemplate?.lang || params.targetLang,
+    lang: params.targetLang,
     engine: 'restaurant-search',
     addressNote: osmInfo?.displayAddress
       ? `📍 已定位：${osmInfo.displayAddress}`
-      : `💡 可點下方「📍 開啟 Google Maps 菜單相簿」或「🍽️ 開啟 Tabelog/Naver 菜單」直接對照店內最新照片！`,
+      : liveScraped.discoveredOfficialUrl
+      ? `🌐 已從線上菜單頁即時抓取真實品項與價格！亦可點下方按鈕開啟 Google Maps 菜單相簿。`
+      : `💡 可點下方「📍 開啟 Google Maps 菜單相簿」或「🍽️ 開啟 Tabelog/Naver 菜單」查看店內最新菜單照片！`,
     googleMapsUrl: links.googleMapsUrl,
     localFoodPortalUrl: links.localFoodPortalUrl,
-    officialUrl: osmInfo?.website,
+    officialUrl: osmInfo?.website || liveScraped.discoveredOfficialUrl,
     items: dynamicItems,
   };
 }

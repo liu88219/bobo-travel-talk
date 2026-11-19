@@ -30,7 +30,7 @@ export interface TranslationResult {
 
 export function extractImportantKeywords(text: string): string[] {
   const matches = text.match(
-    /(?:Gate\s*[A-Z0-9]+|Platform\s*\d+|\d+\s*番線|\d+\s*번|\d{1,2}:\d{2}|[¥₩$€฿₫]\s*[\d,]+(?:\.\d+)?|[\d,]+\s*(?:円|원|บาท|동|歐元|日圓|韓元|台幣|元)|\b\d+\s*(?:名|人|份|つ|개|분)\b)/gi
+    /(?:Gate\s*[A-Z0-9]+|Platform\s*\d+|\d+\s*番線|\d+\s*번|\d{1,2}:\d{2}|(?:HK\$|MOP\s*|[¥₩$€฿₫])\s*[\d,]+(?:\.\d+)?|[\d,]+\s*(?:円|원|บาท|동|歐元|日圓|韓元|港幣|港紙|蚊|台幣|元)|\b\d+\s*(?:名|人|位|份|つ|개|분)\b)/gi
   );
   if (!matches) return [];
   return Array.from(new Set(matches.map((m) => m.trim()))).slice(0, 5);
@@ -87,6 +87,34 @@ const CORE_VOCAB_DICTIONARY: Record<
     { pattern: /카드/i, term: '신용카드', meaning: '信用卡', pronunciation: '新庸卡德' },
     { pattern: /화장실/i, term: '화장실', meaning: '洗手間', pronunciation: '花江希' },
     { pattern: /포장/i, term: '포장', meaning: '外帶打包', pronunciation: '坡江' },
+  ],
+  yue: [
+    { pattern: /唔該/i, term: '唔該 (m4 goi1)', meaning: '不好意思／麻煩您／謝謝', pronunciation: '嗯該' },
+    { pattern: /多謝/i, term: '多謝 (do1 ze6)', meaning: '非常感謝（致謝／收禮）', pronunciation: '多謝' },
+    { pattern: /唔好意思/i, term: '唔好意思', meaning: '不好意思', pronunciation: '嗯吼意思' },
+    { pattern: /喺邊度/i, term: '喺邊度 (hai2 bin1 dou6)', meaning: '在哪裡', pronunciation: '孩邊兜' },
+    { pattern: /幾多錢|幾錢/i, term: '幾多錢 (gei2 do1 cin2)', meaning: '多少錢', pronunciation: '給多錢' },
+    { pattern: /埋單/i, term: '埋單 (maai4 daan1)', meaning: '結帳買單', pronunciation: '買單' },
+    { pattern: /走冰/i, term: '走冰 (zau2 bing1)', meaning: '去冰（不要冰塊）', pronunciation: '走冰' },
+    { pattern: /走青/i, term: '走青 (zau2 ceng1)', meaning: '不要加蔥花', pronunciation: '走清' },
+    { pattern: /走芫荽|芫荽/i, term: '芫荽 (jyun4 sai1)', meaning: '香菜（走芫荽＝不要香菜）', pronunciation: '雲西' },
+    { pattern: /走甜|少甜/i, term: '走甜／少甜', meaning: '無糖／微糖', pronunciation: '走甜／少甜' },
+    { pattern: /茶走/i, term: '茶走 (caa4 zau2)', meaning: '港式奶茶改加煉乳（不加砂糖淡奶）', pronunciation: '茶走' },
+    { pattern: /飛砂走奶/i, term: '飛砂走奶', meaning: '黑咖啡（去糖去奶）', pronunciation: '飛沙走奶' },
+    { pattern: /搭枱/i, term: '搭枱 (daap3 toi2)', meaning: '併桌（與陌生人同桌）', pronunciation: '搭台' },
+    { pattern: /堂食/i, term: '堂食 (tong4 sik6)', meaning: '內用', pronunciation: '堂食' },
+    { pattern: /外賣|拎走|打包/i, term: '外賣／拎走', meaning: '外帶打包', pronunciation: '外買／拎走' },
+    { pattern: /八達通/i, term: '八達通', meaning: '香港交通與小額支付卡', pronunciation: '八達通' },
+    { pattern: /收唔收|得唔得/i, term: '收唔收／得唔得', meaning: '收不收／可以嗎', pronunciation: '收嗯收／德嗯德' },
+    { pattern: /洗手間|廁所/i, term: '洗手間／廁所', meaning: '洗手間', pronunciation: '寫首間' },
+    { pattern: /士多啤梨/i, term: '士多啤梨', meaning: '草莓', pronunciation: '士多啤梨' },
+    { pattern: /西多士|多士/i, term: '西多士／多士', meaning: '法式炸厚吐司／吐司', pronunciation: '西多士' },
+    { pattern: /公仔麵|撈丁/i, term: '公仔麵／撈丁', meaning: '港式泡麵／乾拌出前一丁', pronunciation: '公仔麵／撈丁' },
+    { pattern: /忌廉/i, term: '忌廉', meaning: '鮮奶油', pronunciation: '給廉' },
+    { pattern: /班戟/i, term: '班戟', meaning: '鬆餅／可麗餅', pronunciation: '班給' },
+    { pattern: /豬扒|雞扒|雞翼/i, term: '豬扒／雞翼', meaning: '豬排／雞翅', pronunciation: '豬排／雞翼' },
+    { pattern: /芝士/i, term: '芝士', meaning: '起司', pronunciation: '芝士' },
+    { pattern: /吞拿魚|三文魚/i, term: '吞拿魚／三文魚', meaning: '鮪魚／鮭魚', pronunciation: '吞拿魚／三文魚' },
   ],
   en: [
     { pattern: /\bexcuse me\b/i, term: 'Excuse me', meaning: '不好意思／請問' },
@@ -165,6 +193,57 @@ export function buildLocalWordBreakdowns(
     }
   }
   return hits.slice(0, 6);
+}
+
+const HK_CANTONESE_GLOSSARY_NOTES: Array<[RegExp, string]> = [
+  [/士多啤梨/g, '草莓'],
+  [/班戟/g, '鬆餅／可麗餅'],
+  [/西多士/g, '法式花生醬奶油炸厚吐司'],
+  [/多士/g, '吐司'],
+  [/三文治/g, '三明治'],
+  [/忌廉/g, '鮮奶油'],
+  [/公仔麵/g, '港式泡麵'],
+  [/撈丁/g, '乾拌出前一丁泡麵'],
+  [/意粉/g, '義大利麵'],
+  [/通粉/g, '通心粉'],
+  [/豬扒/g, '豬排'],
+  [/雞扒/g, '雞排'],
+  [/雞翼/g, '雞翅'],
+  [/牛扒/g, '牛排'],
+  [/吞拿魚/g, '鮪魚'],
+  [/三文魚/g, '鮭魚'],
+  [/芝士/g, '起司'],
+  [/雪糕/g, '冰淇淋'],
+  [/芫荽/g, '香菜'],
+  [/走青/g, '不要加蔥花'],
+  [/走冰/g, '去冰'],
+  [/茶走/g, '奶茶改加煉乳不加糖'],
+  [/飛砂走奶/g, '黑咖啡去糖去奶'],
+  [/凍鴦|鴛鴦/g, '咖啡加港式奶茶'],
+  [/搭枱/g, '併桌'],
+  [/埋單/g, '結帳'],
+  [/拎走/g, '外帶'],
+  [/細蓉/g, '傳統小碗雲吞麵'],
+  [/鵝髀/g, '燒鵝大鵝腿'],
+  [/豬潤/g, '豬肝'],
+];
+
+/**
+ * 將香港／澳門廣東話特有的茶餐廳暗號與港式用詞，補充為台灣旅客一看秒懂的繁體中文說明
+ */
+export function annotateHongKongCantoneseMenuZh(
+  originalCantonese: string,
+  baseZh: string
+): string {
+  const notes: string[] = [];
+  for (const [pattern, twMeaning] of HK_CANTONESE_GLOSSARY_NOTES) {
+    if (pattern.test(originalCantonese) && !baseZh.includes(twMeaning.split('／')[0])) {
+      notes.push(twMeaning);
+    }
+  }
+  if (notes.length === 0) return baseZh;
+  const uniqueNotes = Array.from(new Set(notes)).slice(0, 3).join('・');
+  return `${baseZh}（台灣說法：${uniqueNotes}）`;
 }
 
 /**
@@ -337,10 +416,15 @@ async function translateViaGemini(
       ? '超精簡、一眼秒懂的大字手指卡短句'
       : '自然親切的日常口語';
 
+  const yueExtraRule =
+    targetLang === 'yue'
+      ? '\n特別注意：目標語言為「香港／澳門道地口語廣東話（粵語）」，translatedText 必須使用真實口語粵字（例如：唔該、喺邊度、幾多錢、走冰、埋單、唔好意思、我哋），不可只寫書面國語；romanization 請填標準粵語拼音（Jyutping，例如 m4 goi1），phoneticHint 請寫台灣人一看就會唸的國語空耳諧音。'
+      : '';
+
   const prompt =
     direction === 'zh-to-foreign'
       ? `你是一位精通台灣繁體中文與${langCfg.countryName}${langCfg.name}的隨身出國口譯專家。
-請將以下台灣旅客說的話翻譯成最道地的【${langCfg.name}】（語氣要求：${toneDesc}），並提供「獨立逆向直譯回譯驗算」與「關鍵詞彙逐詞拆解」，讓不懂外文的旅客能 100% 確認翻譯正確無誤。
+請將以下台灣旅客說的話翻譯成最道地的【${langCfg.name}】（語氣要求：${toneDesc}），並提供「獨立逆向直譯回譯驗算」與「關鍵詞彙逐詞拆解」，讓不懂外文的旅客能 100% 確認翻譯正確無誤。${yueExtraRule}
 待翻譯原文：「${text}」
 請嚴格只回傳 JSON 物件（不要 markdown code block），欄位如下：
 {
@@ -503,10 +587,14 @@ export async function translateTextDualEngine(params: {
 
     const foreignSentence =
       params.direction === 'zh-to-foreign' ? gtx.translated : cleanText;
+    const finalTranslated =
+      params.direction === 'foreign-to-zh' && params.targetLang === 'yue'
+        ? annotateHongKongCantoneseMenuZh(cleanText, gtx.translated)
+        : gtx.translated;
 
     return {
       sourceText: cleanText,
-      translatedText: gtx.translated,
+      translatedText: finalTranslated,
       romanization: gtx.romanization,
       phoneticHint: gtx.romanization
         ? `發音拼音：${gtx.romanization}`
@@ -514,7 +602,7 @@ export async function translateTextDualEngine(params: {
       backTranslatedText,
       confidenceScore,
       wordBreakdowns: buildLocalWordBreakdowns(foreignSentence, params.targetLang),
-      highlightKeywords: extractImportantKeywords(`${cleanText} ${gtx.translated}`),
+      highlightKeywords: extractImportantKeywords(`${cleanText} ${finalTranslated}`),
       engine: 'builtin',
     };
   }
@@ -522,15 +610,19 @@ export async function translateTextDualEngine(params: {
   const mm = await translateViaMyMemory(cleanText, sl, tl);
   if (mm) {
     const foreignSentence = params.direction === 'zh-to-foreign' ? mm : cleanText;
+    const finalMm =
+      params.direction === 'foreign-to-zh' && params.targetLang === 'yue'
+        ? annotateHongKongCantoneseMenuZh(cleanText, mm)
+        : mm;
     return {
       sourceText: cleanText,
-      translatedText: mm,
+      translatedText: finalMm,
       romanization: '',
       phoneticHint: '點按下方「🔊 朗讀」可直接播放地道語音給對方聽',
       backTranslatedText: cleanText,
       confidenceScore: 90,
       wordBreakdowns: buildLocalWordBreakdowns(foreignSentence, params.targetLang),
-      highlightKeywords: extractImportantKeywords(`${cleanText} ${mm}`),
+      highlightKeywords: extractImportantKeywords(`${cleanText} ${finalMm}`),
       engine: 'builtin',
     };
   }
@@ -1013,6 +1105,7 @@ const TESSERACT_LANG_MAP: Record<
 > = {
   ja: { horiz: 'jpn', vert: 'jpn_vert' },
   ko: { horiz: 'kor' },
+  yue: { horiz: 'chi_tra', vert: 'chi_tra_vert' },
   en: { horiz: 'eng' },
   th: { horiz: 'tha' },
   vi: { horiz: 'vie' },
@@ -1237,9 +1330,9 @@ export async function analyzeMenuPhotoFreeOcr(params: {
     imgH
   );
 
-  // Smart Auto-Fallback for Japanese Vertical Menus: if horizontal scan found < 2 clean lines on a Japanese menu, automatically try vertical (`jpn_vert`)!
+  // Smart Auto-Fallback for Japanese / Hong Kong Traditional Vertical Menus
   if (
-    params.targetLang === 'ja' &&
+    (params.targetLang === 'ja' || params.targetLang === 'yue') &&
     params.orientation !== 'vertical' &&
     lineEntries.length < 2 &&
     tessMap.vert
@@ -1444,9 +1537,9 @@ export async function parseAndTranslateMenuLinesFree(
   const now = Date.now();
   const items = await Promise.all(
     lines.map(async (line, idx): Promise<MenuDishItem> => {
-      // Extract trailing or embedded price like 1,280円, ¥850, 15000원, €18.5, $12
+      // Extract trailing or embedded price like 1,280円, ¥850, 15000원, HK$48, €18.5, $12
       const priceMatch = line.match(
-        /(?:[¥₩$€฿₫]\s*)?(\d{1,3}(?:,\d{3})+|\d{2,6}(?:\.\d{1,2})?)\s*(?:円|원|บาท|동|EUR|USD|JPY|KRW|税込|税抜)?/i
+        /(?:(?:HK\$|MOP\s*|[¥₩$€฿₫])\s*)?(\d{1,3}(?:,\d{3})+|\d{2,6}(?:\.\d{1,2})?)\s*(?:円|원|บาท|동|蚊|港幣|元|HKD|MOP|EUR|USD|JPY|KRW|税込|税抜)?/i
       );
       let priceForeign: number | undefined;
       let cleanDish = line;
@@ -1461,7 +1554,11 @@ export async function parseAndTranslateMenuLinesFree(
         }
       }
       const gtx = await translateViaGoogleGtx(cleanDish, targetLang, 'zh-TW');
-      const translatedZh = gtx?.translated || `${cleanDish}`;
+      const baseZh = gtx?.translated || `${cleanDish}`;
+      const translatedZh =
+        targetLang === 'yue'
+          ? annotateHongKongCantoneseMenuZh(cleanDish, baseZh)
+          : baseZh;
       return {
         id: `free-dish-${now}-${idx}`,
         originalName: cleanDish,
@@ -1489,11 +1586,25 @@ export function speakTextTTS(text: string, bcp47: string, rate = 0.95): void {
     utter.lang = bcp47;
     utter.rate = Math.max(0.55, Math.min(1.3, rate));
     const voices = window.speechSynthesis.getVoices();
-    const langPrefix = bcp47.split('-')[0].toLowerCase();
-    const preferred =
-      voices.find((v) => v.lang.toLowerCase() === bcp47.toLowerCase() && v.localService) ||
-      voices.find((v) => v.lang.toLowerCase() === bcp47.toLowerCase()) ||
-      voices.find((v) => v.lang.toLowerCase().startsWith(langPrefix));
+    const targetLower = bcp47.toLowerCase();
+    const langPrefix = targetLower.split('-')[0];
+    let preferred: SpeechSynthesisVoice | undefined;
+    if (targetLower === 'zh-hk' || targetLower.startsWith('yue')) {
+      // Strictly prioritize authentic Hong Kong Cantonese voices (e.g. Apple Sin-ji / zh-HK / yue-HK) before falling back
+      const isCantoneseVoice = (v: SpeechSynthesisVoice) =>
+        /zh[-_]hk|yue|cantonese|sin-?ji|hiu-?gaai|hiu-?maan|wan-?lung|香港|粵語|廣東話/i.test(
+          `${v.lang} ${v.name}`
+        );
+      preferred =
+        voices.find((v) => isCantoneseVoice(v) && v.localService) ||
+        voices.find((v) => isCantoneseVoice(v));
+    }
+    if (!preferred) {
+      preferred =
+        voices.find((v) => v.lang.toLowerCase() === targetLower && v.localService) ||
+        voices.find((v) => v.lang.toLowerCase() === targetLower) ||
+        voices.find((v) => v.lang.toLowerCase().startsWith(langPrefix));
+    }
     if (preferred) {
       utter.voice = preferred;
     }
@@ -1621,6 +1732,10 @@ function buildFoodPortalLinks(
     )}`;
   } else if (lang === 'ko') {
     localFoodPortalUrl = `https://map.naver.com/p/search/${encodeURIComponent(
+      restaurantName
+    )}`;
+  } else if (lang === 'yue') {
+    localFoodPortalUrl = `https://www.openrice.com/zh/hongkong/restaurants?what=${encodeURIComponent(
       restaurantName
     )}`;
   }
@@ -2025,6 +2140,9 @@ export function extractRealMenuDishesFromWebMarkdown(
     } else if (targetLang === 'ko') {
       if (!/[가-힣A-Za-z]/.test(name)) return;
       if (price !== undefined && (price < 1000 || price > 250000)) return;
+    } else if (targetLang === 'yue') {
+      if (!/[\u4e00-\u9fffA-Za-z]/.test(name)) return;
+      if (price !== undefined && (price < 5 || price > 5000)) return;
     }
 
     const key = name.replace(/[\s()（）【】[\]・･·]+/g, '').toLowerCase();
@@ -2111,6 +2229,18 @@ export function extractRealMenuDishesFromWebMarkdown(
       if (/\d$/.test(dish)) continue;
       addCandidate(dish, Number.parseInt(km[2].replace(/,/g, ''), 10));
     }
+  } else if (targetLang === 'yue') {
+    const yueInlineRegex =
+      /(?:^|[・･·;；。|\n\r]|\s)([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9()（）\s]{1,18}?)\s*[:：·.\-/\s]*\s*(?:(?:HK\$|MOP\s*|\$)\s*(\d{1,4}(?:\.\d{1,2})?)|(\d{1,4})\s*(?:蚊|港幣|元))/gi;
+    let ym2: RegExpExecArray | null;
+    while ((ym2 = yueInlineRegex.exec(cleanText)) !== null) {
+      const dish = ym2[1].trim();
+      if (/\d$/.test(dish)) continue;
+      const pStr = ym2[2] || ym2[3];
+      if (pStr) {
+        addCandidate(dish, Number.parseFloat(pStr));
+      }
+    }
   } else {
     const intlInlineRegex =
       /([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÿ0-9\s'’&()-]{2,26}?)\s*[:：·\-]?\s*(?:[$€฿₫]\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)|(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s*(?:EUR|USD|THB|VND|฿|€|\$))/g;
@@ -2172,6 +2302,10 @@ export async function scrapeLiveRestaurantMenuFromWeb(params: {
       : params.targetLang === 'ko'
       ? `https://html.duckduckgo.com/html/?q=${encodeURIComponent(
           `${normalizedQuery} 메뉴 가격 원`
+        )}`
+      : params.targetLang === 'yue'
+      ? `https://html.duckduckgo.com/html/?q=${encodeURIComponent(
+          `${normalizedQuery} 香港 餐牌 價錢 HK$`
         )}`
       : `https://html.duckduckgo.com/html/?q=${encodeURIComponent(
           `${normalizedQuery} restaurant menu prices`
@@ -2262,7 +2396,11 @@ export async function scrapeLiveRestaurantMenuFromWeb(params: {
         params.targetLang,
         'zh-TW'
       );
-      const translatedZh = gtx?.translated || cleanOrig;
+      const baseZh = gtx?.translated || cleanOrig;
+      const translatedZh =
+        params.targetLang === 'yue'
+          ? annotateHongKongCantoneseMenuZh(cleanOrig, baseZh)
+          : baseZh;
       return {
         id: `web-dish-${now}-${idx}`,
         originalName: cleanOrig,

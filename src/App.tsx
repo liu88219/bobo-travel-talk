@@ -906,7 +906,7 @@ export default function App() {
   }, [vault.menuSessions, activeMenuId]);
 
   const handleLoadDemoMenu = async (
-    key: 'ja_izakaya' | 'ko_bbq' | 'fr_bistro'
+    key: 'ja_izakaya' | 'ko_bbq' | 'hk_chachaanteng' | 'fr_bistro'
   ) => {
     const demo = DEMO_MENU_SESSIONS[key];
     const now = Date.now();
@@ -3206,7 +3206,7 @@ export default function App() {
                   </span>
                 </div>
                 <p className="text-xs text-[#5C5044] mt-0.5">
-                  直接輸入店名（如：**一蘭**、**鳥貴族**、**敘敘苑**、**阿夫利**、**淺草今半**、**達摩串炸**、**橋村炸雞**、**明洞餃子**、**建興酒家**）或貼上 Google Maps 餐廳網址，直接幫妳抓出該店招牌必點菜單與外文點餐卡！
+                  直接輸入店名（如：**一蘭**、**鳥貴族**、**敘敘苑**、**添好運**、**蘭芳園**、**一樂燒鵝**、**橋村炸雞**、**明洞餃子**、**建興酒家**）或貼上 Google Maps 餐廳網址，直接幫妳抓出該店招牌必點菜單與點餐卡！
                 </p>
               </div>
 
@@ -3537,6 +3537,13 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => void handleLoadDemoMenu('hk_chachaanteng')}
+                  className="px-2.5 py-1 rounded-full bg-[#EFECE4] hover:bg-[#F2CA62]/60 border border-[#DDD7C9] text-[11px] font-bold text-[#2D251E] shrink-0"
+                >
+                  🇭🇰 香港茶餐廳範例
+                </button>
+                <button
+                  type="button"
                   onClick={() => void handleLoadDemoMenu('fr_bistro')}
                   className="px-2.5 py-1 rounded-full bg-[#EFECE4] hover:bg-[#F2CA62]/60 border border-[#DDD7C9] text-[11px] font-bold text-[#2D251E] shrink-0"
                 >
@@ -3640,6 +3647,8 @@ export default function App() {
                               ? '🍽️ 查看 Tabelog 食べログ菜單'
                               : currentMenuSession.lang === 'ko'
                               ? '🍽️ 查看 Naver Map 韓文菜單'
+                              : currentMenuSession.lang === 'yue'
+                              ? '🍽️ 查看 OpenRice 香港開飯喇菜單'
                               : '🍽️ 查看 Google 實拍菜單圖'}
                           </span>
                         </a>
@@ -5315,51 +5324,61 @@ export default function App() {
                     NT$ {calcTwd.toLocaleString()}
                   </div>
                   <div className="text-[11px] font-bold text-[#5C5044]">
-                    退稅後約省 NT$ {Math.round(calcTwd * (langCfg.taxFreeRatePct / (100 + langCfg.taxFreeRatePct))).toLocaleString()}
+                    {langCfg.taxFreeRatePct > 0
+                      ? `退稅後約省 NT$ ${Math.round(calcTwd * (langCfg.taxFreeRatePct / (100 + langCfg.taxFreeRatePct))).toLocaleString()}`
+                      : `🎉 ${langCfg.countryName}購物免消費稅（0% 稅率）`}
                   </div>
                 </div>
               </div>
 
               {/* Tax-Free Threshold Progress Meter */}
               <div className="p-3.5 rounded-2xl bg-white border border-[#DDD7C9] space-y-2">
-                <div className="flex items-center justify-between text-xs font-black">
-                  <span>🛂 {langCfg.countryName}免稅門檻湊單進度（含下方血拚清單）</span>
-                  <span className="text-[#C48E63]">
-                    {langCfg.currencySymbol}
-                    {combinedTaxFreeForeign.toLocaleString()} / {langCfg.currencySymbol}
-                    {langCfg.taxFreeThreshold.toLocaleString()}
-                  </span>
-                </div>
-                <div className="w-full h-3 rounded-full bg-[#EFECE4] overflow-hidden">
-                  <div
-                    className={`h-full transition-all duration-300 ${
-                      taxFreeProgressPct >= 100 ? 'bg-emerald-600' : 'bg-[#F2CA62]'
-                    }`}
-                    style={{ width: `${taxFreeProgressPct}%` }}
-                  />
-                </div>
-                <div className="flex items-center justify-between text-xs font-bold">
-                  {combinedTaxFreeForeign >= langCfg.taxFreeThreshold ? (
-                    <span className="text-emerald-700 font-black">
-                      🎉 已達免稅門檻！預估可退 {langCfg.currencySymbol}
-                      {taxRefundForeign.toLocaleString()}（約 NT$ {taxRefundTwd.toLocaleString()}）
-                    </span>
-                  ) : (
-                    <span className="text-[#5C5044]">
-                      還差{' '}
-                      <strong className="text-[#C83D33]">
+                {langCfg.taxFreeThreshold > 0 && langCfg.taxFreeRatePct > 0 ? (
+                  <>
+                    <div className="flex items-center justify-between text-xs font-black">
+                      <span>🛂 {langCfg.countryName}免稅門檻湊單進度（含下方血拚清單）</span>
+                      <span className="text-[#C48E63]">
                         {langCfg.currencySymbol}
-                        {(langCfg.taxFreeThreshold - combinedTaxFreeForeign).toLocaleString()}
-                      </strong>
-                      （約 NT${' '}
-                      {Math.round(
-                        (langCfg.taxFreeThreshold - combinedTaxFreeForeign) *
-                          activeRateToTwd
-                      ).toLocaleString()}
-                      ）即可辦理退稅！
-                    </span>
-                  )}
-                </div>
+                        {combinedTaxFreeForeign.toLocaleString()} / {langCfg.currencySymbol}
+                        {langCfg.taxFreeThreshold.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="w-full h-3 rounded-full bg-[#EFECE4] overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          taxFreeProgressPct >= 100 ? 'bg-emerald-600' : 'bg-[#F2CA62]'
+                        }`}
+                        style={{ width: `${taxFreeProgressPct}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-xs font-bold">
+                      {combinedTaxFreeForeign >= langCfg.taxFreeThreshold ? (
+                        <span className="text-emerald-700 font-black">
+                          🎉 已達免稅門檻！預估可退 {langCfg.currencySymbol}
+                          {taxRefundForeign.toLocaleString()}（約 NT$ {taxRefundTwd.toLocaleString()}）
+                        </span>
+                      ) : (
+                        <span className="text-[#5C5044]">
+                          還差{' '}
+                          <strong className="text-[#C83D33]">
+                            {langCfg.currencySymbol}
+                            {(langCfg.taxFreeThreshold - combinedTaxFreeForeign).toLocaleString()}
+                          </strong>
+                          （約 NT${' '}
+                          {Math.round(
+                            (langCfg.taxFreeThreshold - combinedTaxFreeForeign) *
+                              activeRateToTwd
+                          ).toLocaleString()}
+                          ）即可辦理退稅！
+                        </span>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-xs font-black text-emerald-700">
+                    🎉 {langCfg.countryName}為免稅自由港，購物本身即免消費稅（0%），無需湊單辦退稅！
+                  </div>
+                )}
                 <p className="text-[11px] text-[#8A7E70]">{langCfg.taxFreeTip}</p>
               </div>
 

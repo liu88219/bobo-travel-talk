@@ -63,6 +63,35 @@ export const LANGUAGES: Record<LanguageCode, LanguageConfig> = {
       ],
     },
   },
+  yue: {
+    code: 'yue',
+    name: '廣東話',
+    countryName: '香港／澳門',
+    flag: '🇭🇰',
+    bcp47: 'zh-HK',
+    currencyCode: 'HKD',
+    currencySymbol: 'HK$',
+    currencyName: '港幣',
+    defaultRateToTwd: 4.18,
+    taxFreeThreshold: 0,
+    taxFreeRatePct: 0,
+    taxFreeTip: '香港與澳門皆為免稅自由港，購物本身即享 0% 消費稅！茶餐廳與酒樓多數加收 10% 服務費（加一），且普遍支援八達通（Octopus）付款。',
+    orderGreeting: '唔該，我哋想落單（點餐）：',
+    orderOutro: '係咁多先，唔該晒！（就這些，非常感謝！）',
+    sampleVoicePrompts: {
+      zh: [
+        '不好意思，我們有兩位，請問現在有位子嗎？',
+        '我要一杯冰檸檬茶，去冰少甜，再來一份菠蘿油，謝謝！',
+        '不好意思，請問洗手間在哪裡？這裡可以刷信用卡或八達通嗎？',
+        '老闆我要結帳，請問這樣總共多少錢？可以幫我打包外帶嗎？',
+      ],
+      foreign: [
+        '歡迎光臨！請問幾位呀？呢邊請坐，想飲啲咩先？',
+        '唔好意思，呢度要搭枱喎，請問介唔介意呀？',
+        '總共係一百八十蚊港紙，收現金或者八達通呀！',
+      ],
+    },
+  },
   en: {
     code: 'en',
     name: '英文',
@@ -241,6 +270,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: 'ネギ・パクチー抜きでお願いします',
       ko: '파하고 고수는 빼 주세요',
+      yue: '唔該走青、走芫荽（唔好落蔥同香菜）',
       en: 'No green onions or cilantro, please',
       th: 'ไม่ใส่ต้นหอมและผักชีค่ะ',
       vi: 'Không hành lá và không rau mùi nhé',
@@ -251,6 +281,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '內gi・帕苦七 努ki 得 歐內嘎伊希媽斯',
       ko: '帕 哈勾 勾蘇 嫩 背 朱誰唷',
+      yue: '嗯該 走清、走雲西（嗯吼落蔥 同 雲西）',
       th: '買塞 東紅 勒 帕七 卡',
     },
   },
@@ -261,6 +292,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: 'わさび抜き（サビ抜き）でお願いします',
       ko: '와사비 빼 주세요',
+      yue: '唔該走芥辣（唔要芥末）',
       en: 'No wasabi, please',
       th: 'ไม่ใส่วาซาบิค่ะ',
       vi: 'Không bỏ mù tạt (wasabi) nhé',
@@ -271,6 +303,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '撒比 努ki 得 歐內嘎伊希媽斯',
       ko: '哇撒比 背 朱誰唷',
+      yue: '嗯該 走改辣（嗯優 改辣）',
     },
   },
   {
@@ -280,6 +313,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: 'ニンニク抜きでお願いします',
       ko: '마늘 빼 주세요',
+      yue: '唔該走蒜頭（唔落蒜）',
       en: 'No garlic, please',
       th: 'ไม่ใส่กระเทียมค่ะ',
       vi: 'Không bỏ tỏi nhé',
@@ -290,6 +324,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '您尼苦 努ki 得 歐內嘎伊希媽斯',
       ko: '媽呢 背 朱誰唷',
+      yue: '嗯該 走算頭（嗯落算）',
     },
   },
   {
@@ -299,6 +334,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: '牛肉（ぎゅうにく）は食べられません',
       ko: '소고기는 못 먹어요',
+      yue: '唔好意思，我唔食牛肉',
       en: 'I do not eat beef',
       th: 'ไม่ทานเนื้อวัวค่ะ',
       vi: 'Mình không ăn thịt bò',
@@ -309,6 +345,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '牛尼苦 哇 塔杯拉勒媽線',
       ko: '搜勾gi 嫩 某 某勾唷',
+      yue: '嗯吼意思，偶 嗯食 牛優',
     },
   },
   {
@@ -318,6 +355,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: '豚肉（ぶたにく）は食べられません',
       ko: '돼지고기는 못 먹어요',
+      yue: '唔好意思，我唔食豬肉',
       en: 'I do not eat pork',
       th: 'ไม่ทานเนื้อหมูค่ะ',
       vi: 'Mình không ăn thịt heo',
@@ -328,6 +366,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '布塔尼苦 哇 塔杯拉勒媽線',
       ko: '堆吉勾gi 嫩 某 某勾唷',
+      yue: '嗯吼意思，偶 嗯食 豬優',
     },
   },
 
@@ -339,6 +378,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: '氷なし（または氷少なめ）でお願いします',
       ko: '얼음 빼고(조금만) 주세요',
+      yue: '唔該走冰（或者少冰）',
       en: 'No ice (or less ice), please',
       th: 'ไม่ใส่น้ำแข็ง (หรือน้ำแข็งน้อย) ค่ะ',
       vi: 'Cho mình ít đá hoặc không đá nhé',
@@ -349,6 +389,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '口哩 那希（口哩 斯苦那妹）得 歐內嘎伊希媽斯',
       ko: '歐冷 背勾 朱誰唷',
+      yue: '嗯該 走冰（瓦姐 少冰）',
       th: '買塞 楠肯 卡',
     },
   },
@@ -359,6 +400,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: '辛さ控えめ（または辛くないよう）でお願いします',
       ko: '안 맵게(조금만 맵게) 해 주세요',
+      yue: '唔該走辣（或者少辣／微辣）',
       en: 'Mild or non-spicy, please',
       th: 'เผ็ดน้อยมากๆ (หรือไม่เผ็ด) ค่ะ',
       vi: 'Làm ít cay hoặc không cay giúp mình nhé',
@@ -369,6 +411,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '卡拉撒 喜卡欸妹 得 歐內嘎伊希媽斯',
       ko: '安 妹給 嘿 朱誰唷',
+      yue: '嗯該 走辣（瓦姐 少辣）',
       th: '佩餒 罵罵（買佩）卡',
     },
   },
@@ -379,6 +422,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: '無糖（甘み抜き・シロップなし）でお願いします',
       ko: '시럽 빼고(덜 달게) 해 주세요',
+      yue: '唔該走甜（或者少甜）',
       en: 'Unsweetened / less sugar, please',
       th: 'หวานน้อยมากๆ (หรือไม่ใส่น้ำตาล) ค่ะ',
       vi: 'Ít đường hoặc không đường nhé',
@@ -389,6 +433,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '阿媽咪 努ki（希漏普 那希）得 歐內嘎伊希媽斯',
       ko: '偷 達給 嘿 朱誰唷',
+      yue: '嗯該 走甜（瓦姐 少甜）',
       th: '丸餒 罵罵 卡',
     },
   },
@@ -399,6 +444,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: '味は薄め（あっさり）でお願いします',
       ko: '싱겁게(덜 짜게) 해 주세요',
+      yue: '唔該淡味啲（唔好咁鹹）',
       en: 'Less salty / lighter flavor, please',
       th: 'ขอรสไม่จัด (เค็มน้อย) ค่ะ',
       vi: 'Làm nhạt hơn một chút giúp mình nhé',
@@ -409,6 +455,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '阿吉 哇 烏斯妹 得 歐內嘎伊希媽斯',
       ko: '偷 扎給 嘿 朱誰唷',
+      yue: '嗯該 淡美迪（嗯吼 咁含）',
     },
   },
   {
@@ -418,6 +465,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: 'ご飯は少なめでお願いします',
       ko: '밥은 조금만 주세요',
+      yue: '唔該少飯（白飯少啲）',
       en: 'Less rice, please',
       th: 'ขอข้าวน้อยค่ะ',
       vi: 'Cho mình ít cơm thôi nhé',
@@ -428,6 +476,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '勾航 哇 斯苦那妹 得 歐內嘎伊希媽斯',
       ko: '帕奔 揪跟慢 朱誰唷',
+      yue: '嗯該 少飯（白飯少迪）',
     },
   },
   {
@@ -437,6 +486,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: '卵（お肉）はよく焼き（しっかり加熱）でお願いします',
       ko: '계란(고기)은 완전히 익혀 주세요',
+      yue: '唔該隻蛋（或者啲肉）要全熟',
       en: 'Egg / meat well-done (fully cooked), please',
       th: 'ขอไข่สุกๆ (เนื้อสุกๆ) ค่ะ',
       vi: 'Làm trứng chín kỹ (thịt chín kỹ) giúp mình nhé',
@@ -447,6 +497,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '塔媽勾 哇 唷苦雅ki 得 歐內嘎伊希媽斯',
       ko: '丸炯喜 伊ㄎ優 朱誰唷',
+      yue: '嗯該 節蛋（迪優）優 全熟',
     },
   },
 
@@ -458,6 +509,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: 'すみません、お水（おひや）をください',
       ko: '저기요, 물 좀 주세요',
+      yue: '唔該，可唔可以畀杯凍水／滾水我呀？',
       en: 'Could we have some tap water, please?',
       th: 'ขอน้ำเปล่าด้วยค่ะ',
       vi: 'Cho mình xin nước lọc nhé',
@@ -468,6 +520,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '斯咪媽線，歐咪茲 歐 苦達賽',
       ko: '揪gi唷，木 炯 朱誰唷',
+      yue: '嗯該，何嗯何以 俾杯東水／滾水 偶呀？',
       fr: '暈 卡拉夫 兜 希夫普蕾',
     },
   },
@@ -478,6 +531,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: '取り皿（とりざら）とスプーンをください',
       ko: '앞접시랑 수저 좀 주세요',
+      yue: '唔該，畀幾個細碗同羹我哋分嚟食吖',
       en: 'Could we have small sharing plates, please?',
       th: 'ขอจานแบ่งและช้อนด้วยค่ะ',
       vi: 'Cho mình xin chén nhỏ để chia đồ ăn nhé',
@@ -488,6 +542,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '偷哩扎拉 歐 苦達賽',
       ko: '阿揪希 郎 蘇揪 炯 朱誰唷',
+      yue: '嗯該，俾給個 細碗 同 耕 偶地 分雷食呀',
     },
   },
   {
@@ -497,6 +552,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: '持ち帰り（テイクアウト）でお願いします',
       ko: '포장해 주세요 (가지고 갈게요)',
+      yue: '唔該我要外賣拎走（打包）',
       en: 'To go / takeaway, please',
       th: 'สั่งกลับบ้านค่ะ (ใส่กล่อง)',
       vi: 'Cho mìnhแพ็ค mang về nhé',
@@ -507,6 +563,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '某七卡欸哩（Take-out）得 歐內嘎伊希媽斯',
       ko: '坡江 嘿 朱誰唷',
+      yue: '嗯該 偶優 外買 拎走（打包）',
     },
   },
   {
@@ -516,6 +573,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     translations: {
       ja: 'お会計（または免税手続き）をお願いします',
       ko: '계산(택스 리펀드) 해 주세요',
+      yue: '唔該埋單！呢度收唔收信用卡或者八達通？',
       en: 'Could we have the bill (or Tax-Free form), please?',
       th: 'เช็คบิล (ขอใบกำกับภาษี VAT Refund) ด้วยค่ะ',
       vi: 'Tính tiền giúp mình nhé',
@@ -526,6 +584,7 @@ export const DIETARY_ORDER_NOTES: DietaryOrderNoteItem[] = [
     phoneticHints: {
       ja: '歐開K 歐 歐內嘎伊希媽斯',
       ko: '給三 嘿 朱誰唷',
+      yue: '嗯該 買單！呢兜 收嗯收 信用卡 瓦姐 八達通？',
     },
   },
 ];
@@ -562,6 +621,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         text: '저기요, 두 명인데 지금 자리 있나요?',
         romanization: 'Jeogiyo, du myeong-inde jigeum jari innayo?',
         phoneticHint: '揪gi唷，嘟 謬音爹 吉跟 洽哩 伊那唷？',
+      },
+      yue: {
+        text: '唔該，我哋兩位呀，請問而家有冇位坐呀？',
+        romanization: 'M4 goi1, ngo5 dei6 loeng5 wai2 aa3, cing2 man6 ji4 gaa1 jau5 mou5 wai2 co5 aa3?',
+        phoneticHint: '嗯該，偶地 兩尾呀，請問 伊嘎 有某尾 錯呀？',
       },
       en: {
         text: 'Excuse me, table for two, please. Do you have any seats available?',
@@ -611,6 +675,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         romanization: 'Junggug-eona yeong-eo menyupan innayo? Jeil in-gi inneun menyuga mwoyeyo?',
         phoneticHint: '中估勾那 庸歐 美牛潘 伊那唷？切依 音gi 伊嫩 美牛嘎 摸耶唷？',
       },
+      yue: {
+        text: '唔該，請問有冇圖文餐牌呀？呢度最推介嘅招牌菜係邊樣？',
+        romanization: 'M4 goi1, cing2 man6 jau5 mou5 tou4 man4 caan1 paai2 aa3? Ni1 dou6 zeoi3 teoi1 gaai3 ge3 ziu1 paai4 coi3 hai6 bin1 joeng6?',
+        phoneticHint: '嗯該，請問 有某 圖文餐牌呀？呢兜 最推蓋 給 招排菜 孩 邊樣？',
+      },
       en: {
         text: 'Do you have an English menu? What is your most popular signature dish?',
         romanization: 'What is your most popular signature dish?',
@@ -659,6 +728,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         romanization: 'Igeo hana juseyo. Parang gosuneun ppae jusigo, eol-eum ppae juseyo.',
         phoneticHint: '伊勾 哈那 朱誰唷。帕郎 勾蘇嫩 背 朱希勾，歐冷 背 朱誰唷',
       },
+      yue: {
+        text: '唔該呢個要一份，走青、走芫荽，嘢飲要走冰，唔該晒！',
+        romanization: 'M4 goi1 ni1 go3 jiu3 jat1 fan6, zau2 ceng1, zau2 jyun4 sai1, je5 jam2 jiu3 zau2 bing1, m4 goi1 saai3!',
+        phoneticHint: '嗯該 呢個優 一份，走清、走雲西，野飲優 走冰，嗯該賽！',
+      },
       en: {
         text: 'One of this, please—no green onions or cilantro, and no ice for the drink.',
         romanization: 'No green onions or cilantro, and no ice, please.',
@@ -706,6 +780,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         text: '저기요, 계산해 주세요. 신용카드 결제 되나요?',
         romanization: 'Jeogiyo, gyesanhae juseyo. Sinyongkadeu gyeolje doenayo?',
         phoneticHint: '揪gi唷，給三黑 朱誰唷。新庸卡德 給姐 堆那唷？',
+      },
+      yue: {
+        text: '唔該埋單呀！請問收唔收信用卡、Apple Pay 或者八達通？',
+        romanization: 'M4 goi1 maai4 daan1 aa3! Cing2 man6 sau1 m4 sau1 seon3 jung6 kaat1 waak6 ze2 baat3 daat6 tung1?',
+        phoneticHint: '嗯該 買單呀！請問 收嗯收 信用卡、Apple Pay 瓦姐 八達通？',
       },
       en: {
         text: 'Excuse me, could we have the bill, please? Do you accept credit cards or Apple Pay?',
@@ -757,6 +836,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         romanization: 'Igeo ibeo bwado doenayo? Sae sangpum-ina han saijeu jageun geo innayo?',
         phoneticHint: '伊勾 伊波 巴兜 堆那唷？誰 桑普米那 含 賽伊茲 洽跟 勾 伊那唷？',
       },
+      yue: {
+        text: '唔該，呢件可唔可以試上身呀？有冇全新嘅貨或者細一個碼？',
+        romanization: 'M4 goi1, ni1 gin6 ho2 m4 ho2 ji5 si3 soeng5 san1 aa3? Jau5 mou5 cyun4 san1 ge3 fo3 waak6 ze2 sai3 jat1 go3 maa5?',
+        phoneticHint: '嗯該，呢件 何嗯何以 試上身呀？有某 全新給貨 瓦姐 細一個碼？',
+      },
       en: {
         text: 'May I try this on? Do you have a brand-new piece in stock or one size smaller?',
         romanization: 'May I try this on? Do you have a brand-new one in stock?',
@@ -804,6 +888,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         text: '여기서 바로 택스 리펀드(면세) 되나요? 여권 가지고 있어요!',
         romanization: 'Yeogiseo baro taekseu ripeondeu doenayo? Yeogwon gajigo isseoyo!',
         phoneticHint: '唷gi搜 巴樓 Tax Refund 堆那唷？唷光 卡吉勾 伊搜唷！',
+      },
+      yue: {
+        text: '唔該，請問呢度有冇遊客優惠或者免稅呀？我有帶護照喺身！',
+        romanization: 'M4 goi1, cing2 man6 ni1 dou6 jau5 mou5 jau4 haak3 jau1 wai6 aa3? Ngo5 jau5 daai3 wu6 ziu3 hai2 san1!',
+        phoneticHint: '嗯該，請問 呢兜 有某 遊客優惠呀？偶有帶 護照 孩身！',
       },
       en: {
         text: 'Can I get a Tax-Free refund here? I have my passport with me!',
@@ -855,6 +944,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         romanization: 'Gisanim, i jido jusoro ga juseyo. Gamsahamnida!',
         phoneticHint: 'gi薩您，伊 吉兜 朱搜樓 卡 朱誰唷。康撒哈咪達！',
       },
+      yue: {
+        text: '司機大佬你好！唔該車我去地圖上面呢個地址呀，唔該晒！',
+        romanization: 'Si1 gei1 daai6 lou2 nei5 hou2! M4 goi1 ce1 ngo5 heoi3 dei6 tou4 soeng6 min6 ni1 go3 dei6 zi2 aa3, m4 goi1 saai3!',
+        phoneticHint: '司機大佬 內吼！嗯該 車偶去 地圖上面 呢個地址呀，嗯該賽！',
+      },
       en: {
         text: 'Hello! Could you please take me to this address on the map? Thank you!',
         romanization: 'Could you please take me to this address?',
@@ -902,6 +996,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         text: '저기요, 이 열차가 이 역으로 가나요? 몇 번 승강장에서 타야 하나요?',
         romanization: 'I yeolchaga i yeog-euro ganayo? Myeot beon seung-gangjang-eseo taya hanayo?',
         phoneticHint: '伊 唷洽嘎 伊 唷格樓 卡那唷？謬 崩 升剛江欸搜 塔呀 哈那唷？',
+      },
+      yue: {
+        text: '唔該，請問呢班車去唔去到呢個站呀？應該喺邊個月台搭車？',
+        romanization: 'M4 goi1, cing2 man6 ni1 baan1 ce1 heoi3 m4 heoi3 dou3 ni1 go3 zaam6 aa3? Jing1 goi1 hai2 bin1 go3 jyut6 toi4 daap3 ce1?',
+        phoneticHint: '嗯該，請問 呢班車 去嗯去兜 呢個站呀？應該 孩邊個 月台 搭車？',
       },
       en: {
         text: 'Excuse me, does this train go to this station? Which platform should I take?',
@@ -953,6 +1052,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         romanization: 'Chekeu-in butakdeurimnida. Jim-eul meonjeo matgil su isseulkkayo?',
         phoneticHint: 'Check-in 不塔德林尼達。吉悶 某揪 媽gi 蘇 伊斯嘎唷？',
       },
+      yue: {
+        text: '你好，我想 Check-in 呀！如果未夠鐘攞房，可唔可以幫我擺低行李先？',
+        romanization: 'Nei5 hou2, ngo5 soeng2 Check-in aa3! Jyu4 gwo2 mei6 gau3 zung1 lo2 fong2, ho2 m4 ho2 ji5 bong1 ngo5 baai2 dai1 hang4 lei5 sin1?',
+        phoneticHint: '內吼，偶想 Check-in 呀！如果 未夠鐘 羅房，何嗯何以 幫偶 擺低行李 先？',
+      },
       en: {
         text: 'Hello, I would like to check in. If it is too early, could we leave our luggage here first?',
         romanization: 'Could we leave our luggage here first?',
@@ -1002,6 +1106,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         text: '저기요, 두통(소화불량)이 있는데 졸리지 않는 추천 약이 있나요?',
         romanization: 'Dutong(sohwabullyang)-i inneunde jolliji anneun yak innayo?',
         phoneticHint: '嘟痛（搜花不良）伊 伊嫩爹，揪哩吉 安嫩 呀 伊那唷？',
+      },
+      yue: {
+        text: '唔該，我少少頭痛／肚唔舒服，請問有冇唔會眼瞓嘅成藥推介呀？',
+        romanization: 'M4 goi1, ngo5 siu2 siu2 tau4 tung3 / tou5 m4 syu1 fuk6, cing2 man6 jau5 mou5 m4 wui5 ngaan5 fan3 ge3 sing4 joek6 teoi1 gaai3 aa3?',
+        phoneticHint: '嗯該，偶 少少頭痛／肚嗯舒服，請問 有某 嗯會眼瞓 給 成藥推蓋呀？',
       },
       en: {
         text: 'Excuse me, I have a headache / upset stomach. Do you recommend any non-drowsy medicine?',
@@ -1053,6 +1162,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         romanization: 'Jeogiyo, sajin jom jjigeo jusil su innayo? Gamsahamnida!',
         phoneticHint: '揪gi唷，撒金 炯 幾勾 朱希 蘇 伊那唷？康撒哈咪達！',
       },
+      yue: {
+        text: '唔好意思，可唔可以幫我哋影張相呀？撳呢個圓形掣就得㗎喇，唔該晒！',
+        romanization: 'M4 hou2 ji3 si1, ho2 m4 ho2 ji5 bong1 ngo5 dei6 jing2 zoeng1 soeng2 aa3? Gam6 ni1 go3 jyun4 jing4 zai3 zau6 dak1 gaa3 laa3!',
+        phoneticHint: '嗯吼意思，何嗯何以 幫偶地 影張相呀？敢 呢個 圓形掣 就德嘎啦，嗯該賽！',
+      },
       en: {
         text: 'Excuse me, could you please take a photo for us? Just press this round button. Thank you so much!',
         romanization: 'Could you please take a photo for us?',
@@ -1103,6 +1217,11 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
         romanization: 'Banggeum yeogiseo hyudaepon(jigap/yeogwon)-eul ireobeoryeonneunde bunsilmuri innayo?',
         phoneticHint: '邦跟 唷gi搜 休得碰（吉嘎／唷光）伊樓波溜嫩爹，奔希母哩 伊那唷？',
       },
+      yue: {
+        text: '唔好意思，我部電話／銀包／護照頭先唔小心跌咗喺呢度，請問有冇人執到呀？',
+        romanization: 'M4 hou2 ji3 si1, ngo5 bou6 din6 waa2 / ngan4 baau1 / wu6 ziu3 tau4 sin1 m4 siu2 sam1 dit3 zo2 hai2 ni1 dou6, jau5 mou5 jan4 zap1 dou2 aa3?',
+        phoneticHint: '嗯吼意思，偶部電話／銀包／護照 頭先 嗯小心 跌左孩呢兜，有某人 執兜呀？',
+      },
       en: {
         text: 'Excuse me, I just lost my phone / wallet / passport around here. Has anyone turned it in to lost and found?',
         romanization: 'I lost my phone / wallet / passport. Has anyone turned it in?',
@@ -1137,7 +1256,7 @@ export const BUILTIN_SURVIVAL_PHRASES: BuiltinPhraseItem[] = [
   },
 ];
 
-export const DEMO_MENU_SESSIONS: Record<'ja_izakaya' | 'ko_bbq' | 'fr_bistro', Omit<MenuScanSession, 'id' | 'createdAt' | 'updatedAt'>> = {
+export const DEMO_MENU_SESSIONS: Record<'ja_izakaya' | 'ko_bbq' | 'hk_chachaanteng' | 'fr_bistro', Omit<MenuScanSession, 'id' | 'createdAt' | 'updatedAt'>> = {
   ja_izakaya: {
     title: '🇯🇵 東京新宿・炭火串燒居酒屋菜單',
     lang: 'ja',
@@ -1213,6 +1332,50 @@ export const DEMO_MENU_SESSIONS: Record<'ja_izakaya' | 'ko_bbq' | 'fr_bistro', O
         descriptionZh: '完全不辣、蓬鬆牽絲韓式砂鍋蒸蛋',
         priceForeign: 7000,
         quantity: 1,
+      },
+    ],
+  },
+  hk_chachaanteng: {
+    title: '🇭🇰 香港中環・經典茶餐廳＆港式點心菜單',
+    lang: 'yue',
+    selectedNotes: ['no-ice', 'no-sugar'],
+    items: [
+      {
+        id: 'dish-hk-1',
+        originalName: '鮮油菠蘿包（菠蘿油）',
+        translatedZh: '熱酥菠蘿麵包夾冰厚切牛油（奶油）',
+        romanization: 'Sin1 jau4 bo1 lo4 baau1 (Bo1 lo4 jau4)',
+        descriptionZh: '剛出爐熱騰騰菠蘿包夾入冰涼鹹奶油，茶餐廳必點靈魂！',
+        priceForeign: 18,
+        quantity: 1,
+      },
+      {
+        id: 'dish-hk-2',
+        originalName: '法蘭西多士（花生醬牛油）',
+        translatedZh: '港式黃金炸花生醬厚吐司（淋煉乳／糖漿）',
+        romanization: 'Faat3 laan4 sai1 do1 si2',
+        descriptionZh: '兩片吐司抹厚花生醬沾蛋液酥炸，香脆邪惡超滿足',
+        priceForeign: 32,
+        quantity: 1,
+      },
+      {
+        id: 'dish-hk-3',
+        originalName: '鮮蝦雲吞撈麵（走青）',
+        translatedZh: '整隻鮮蝦港式雲吞乾拌竹昇鹼水麵（不要蔥）',
+        romanization: 'Sin1 haa1 wan4 tan1 lou1 min6 (Zau2 ceng1)',
+        descriptionZh: '爽彈鹼水細麵拌蠔油豬油香氣，配大地魚清湯',
+        priceForeign: 48,
+        dietaryWarning: '🦐 含蝦蟹海鮮',
+        quantity: 1,
+      },
+      {
+        id: 'dish-hk-4',
+        originalName: '凍檸茶（走冰・少甜） / 絲襪奶茶（茶走）',
+        translatedZh: '冰港式檸檬茶（去冰微糖） ／ 港式絲襪奶茶改煉乳不加糖',
+        romanization: 'Dung3 ling4 caa4 (Zau2 bing1 siu2 tim4) / Caa4 zau2',
+        descriptionZh: '茶餐廳暗號：「走冰＝去冰」、「少甜＝微糖」、「茶走＝改加煉乳不加砂糖」',
+        priceForeign: 24,
+        quantity: 2,
       },
     ],
   },

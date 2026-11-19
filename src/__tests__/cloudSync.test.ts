@@ -26,6 +26,7 @@ import {
   normalizeRestaurantQueryForLocalSearch,
   extractMenuUrlsFromSearchMarkdown,
   extractRealMenuDishesFromWebMarkdown,
+  annotateHongKongCantoneseMenuZh,
 } from '../services/translatorEngine';
 
 describe('BoboTalk Cloud Sync & Translator Engine', () => {
@@ -230,5 +231,40 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     expect(dishes.some((d) => d.originalName.includes('二階建て生ほたて') && d.priceForeign === 330)).toBe(true);
     expect(dishes.some((d) => d.originalName.includes('鶏白湯Soba') && d.priceForeign === 1200)).toBe(true);
     expect(dishes.some((d) => d.originalName.includes('鬼釜') && d.priceForeign === 1300)).toBe(true);
+  });
+
+  it('supports Hong Kong/Macau Cantonese (yue) phrases, word breakdowns, HK menu glossary, and OpenRice restaurant menus', async () => {
+    const phraseRes = await translateTextDualEngine({
+      text: '不好意思，我們有兩位，請問現在有位子嗎？',
+      direction: 'zh-to-foreign',
+      targetLang: 'yue',
+    });
+    expect(phraseRes.translatedText).toContain('唔該');
+    expect(phraseRes.romanization).toContain('m4 goi1'.slice(1));
+    expect(phraseRes.phoneticHint).toContain('嗯該');
+
+    const yueTokens = buildLocalWordBreakdowns('唔該埋單，凍檸茶走冰走青', 'yue');
+    expect(yueTokens.some((t) => t.term.includes('唔該'))).toBe(true);
+    expect(yueTokens.some((t) => t.term.includes('埋單'))).toBe(true);
+    expect(yueTokens.some((t) => t.term.includes('走冰'))).toBe(true);
+    expect(yueTokens.some((t) => t.term.includes('走青'))).toBe(true);
+
+    const annotated = annotateHongKongCantoneseMenuZh('士多啤梨班戟配茶走', '士多啤梨班戟配茶走');
+    expect(annotated).toContain('草莓');
+    expect(annotated).toContain('鬆餅');
+    expect(annotated).toContain('煉乳');
+
+    const hkDishes = extractRealMenuDishesFromWebMarkdown('鮮蝦雲吞麵 HK$48\n凍檸茶 $24', 'yue');
+    expect(hkDishes.some((d) => d.originalName.includes('鮮蝦雲吞麵') && d.priceForeign === 48)).toBe(true);
+    expect(hkDishes.some((d) => d.originalName.includes('凍檸茶') && d.priceForeign === 24)).toBe(true);
+
+    const hkMenu = await searchRestaurantMenuOnline({
+      query: '添好運',
+      targetLang: 'yue',
+    });
+    expect(hkMenu.lang).toBe('yue');
+    expect(hkMenu.title).toContain('添好運');
+    expect(hkMenu.localFoodPortalUrl).toContain('openrice.com');
+    expect(hkMenu.items.some((i) => i.originalName.includes('叉燒包'))).toBe(true);
   });
 });

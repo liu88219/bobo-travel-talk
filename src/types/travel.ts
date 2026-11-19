@@ -1,4 +1,4 @@
-export type LanguageCode = 'ja' | 'ko' | 'en' | 'th' | 'vi' | 'fr' | 'es' | 'de';
+export type LanguageCode = 'ja' | 'ko' | 'yue' | 'en' | 'th' | 'vi' | 'fr' | 'es' | 'de';
 
 export type TranslationTone = 'polite' | 'concise' | 'casual';
 

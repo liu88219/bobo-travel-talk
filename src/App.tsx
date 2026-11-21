@@ -112,7 +112,7 @@ import {
 
 type ActiveTab = 'talk' | 'live' | 'menu' | 'phrasebook' | 'calc';
 
-const APP_BUILD_VERSION = 'v2.6';
+const APP_BUILD_VERSION = 'v2.7';
 
 function detectStandalonePwa(): boolean {
   if (typeof window === 'undefined') return false;
@@ -222,6 +222,8 @@ export default function App() {
   const isStandalonePwa = useMemo(() => detectStandalonePwa(), []);
   const liveHeardAnySpeechRef = useRef(false);
   const liveSessionIdRef = useRef(0);
+  const isSyncInFlightRef = useRef(false);
+  const lastAutoSyncAtRef = useRef(0);
 
   // Tab 3: Menu Photo & Point-to-Order Card state
   const [activeMenuId, setActiveMenuId] = useState<string>('');
@@ -455,9 +457,12 @@ export default function App() {
     };
   }, [checkForNewAppVersion, notify]);
 
-  // Auto sync on window focus / visibilitychange / online recovery
+  // Auto sync on window focus / visibilitychange / online recovery (guarded against overlap & echo loops!)
   const handleManualOrAutoSync = useCallback(
-    async (showNotification = false) => {
+    async (
+      showNotification = false,
+      opts?: { pullOnly?: boolean; silentBadge?: boolean }
+    ) => {
       const cleanPass = normalizePasscode(passcodeRef.current);
       if (!cleanPass) {
         if (showNotification) {
@@ -466,26 +471,41 @@ export default function App() {
         }
         return;
       }
-      setSyncStatus('syncing');
-      const { merged, synced, matchedPasscode } = await syncVaultWithCloud(
-        vaultRef.current,
-        cleanPass
-      );
-      vaultRef.current = merged;
-      setVault(merged);
-      if (matchedPasscode && matchedPasscode !== cleanPass) {
-        passcodeRef.current = matchedPasscode;
-        setPasscode(matchedPasscode);
-        setPasscodeInput(matchedPasscode);
-        await saveRememberedPasscode(matchedPasscode);
+      if (isSyncInFlightRef.current) return;
+      const nowMs = Date.now();
+      // Background auto-sync cooldown (4s) so focus/visibility/SSE never spin nonstop
+      if (!showNotification && nowMs - lastAutoSyncAtRef.current < 4000) {
+        return;
       }
-      setSyncStatus(synced ? 'synced' : 'pending');
-      if (showNotification) {
-        notify(
-          synced
-            ? '☁️ 已完成跨裝置雲端同步（Safari ↔ 主畫面 App 已對齊最新紀錄）'
-            : '⚠️ 目前離線或雲端忙碌，資料已安全存入本機保險箱（待連網自動同步）'
+      isSyncInFlightRef.current = true;
+      lastAutoSyncAtRef.current = nowMs;
+      if (!opts?.silentBadge) {
+        setSyncStatus('syncing');
+      }
+      try {
+        const { merged, synced, matchedPasscode } = await syncVaultWithCloud(
+          vaultRef.current,
+          cleanPass,
+          { pullOnly: opts?.pullOnly, notifyPeers: showNotification }
         );
+        vaultRef.current = merged;
+        setVault(merged);
+        if (matchedPasscode && matchedPasscode !== cleanPass) {
+          passcodeRef.current = matchedPasscode;
+          setPasscode(matchedPasscode);
+          setPasscodeInput(matchedPasscode);
+          await saveRememberedPasscode(matchedPasscode);
+        }
+        setSyncStatus(synced ? 'synced' : 'pending');
+        if (showNotification) {
+          notify(
+            synced
+              ? '☁️ 已完成跨裝置雲端同步（Safari ↔ 主畫面 App 已對齊最新紀錄）'
+              : '⚠️ 目前離線或雲端忙碌，資料已安全存入本機保險箱（待連網自動同步）'
+          );
+        }
+      } finally {
+        isSyncInFlightRef.current = false;
       }
     },
     [notify]
@@ -496,18 +516,18 @@ export default function App() {
       if (document.visibilityState === 'visible') {
         void checkForNewAppVersion();
         if (passcodeRef.current) {
-          void handleManualOrAutoSync(false);
+          void handleManualOrAutoSync(false, { silentBadge: true });
         }
       }
     };
     const onFocus = () => {
       if (passcodeRef.current) {
-        void handleManualOrAutoSync(false);
+        void handleManualOrAutoSync(false, { silentBadge: true });
       }
     };
     const onOnline = () => {
       if (passcodeRef.current) {
-        void handleManualOrAutoSync(false);
+        void handleManualOrAutoSync(false, { silentBadge: false });
       }
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -520,11 +540,17 @@ export default function App() {
     };
   }, [checkForNewAppVersion, handleManualOrAutoSync]);
 
-  // Real-time SSE listener
+  // Real-time SSE listener (strictly ignores self-echo & only pulls without bouncing another ping!)
   useEffect(() => {
     if (!sseTopic || !passcode) return;
-    return subscribeToVaultSse(sseTopic, () => {
-      void handleManualOrAutoSync(false);
+    return subscribeToVaultSse(sseTopic, (remoteUpdatedAt) => {
+      if (
+        typeof remoteUpdatedAt === 'number' &&
+        remoteUpdatedAt <= (vaultRef.current.updatedAt || 0)
+      ) {
+        return;
+      }
+      void handleManualOrAutoSync(false, { pullOnly: true, silentBadge: true });
     });
   }, [sseTopic, passcode, handleManualOrAutoSync]);
 

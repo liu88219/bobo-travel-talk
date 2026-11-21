@@ -682,7 +682,53 @@ async function readAllPermanentCloudCandidates(key: string): Promise<string[]> {
   return Array.from(new Set([onlineRaw, devRaw].filter(isValidCipherEnvelope)));
 }
 
-export async function pushVaultToCloud(state: VaultState, passcode: string): Promise<boolean> {
+const LOCAL_CLIENT_ID = `bt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+export function getLocalSyncClientId(): string {
+  return LOCAL_CLIENT_ID;
+}
+
+export function shouldProcessSseMessage(
+  rawEventData: string,
+  localClientId = LOCAL_CLIENT_ID
+): { shouldSync: boolean; remoteUpdatedAt?: number } {
+  try {
+    const parsed = JSON.parse(rawEventData) as {
+      event?: string;
+      message?: string;
+    };
+    if (!parsed || parsed.event !== 'message') {
+      return { shouldSync: false };
+    }
+    if (typeof parsed.message === 'string' && parsed.message.trim().startsWith('{')) {
+      try {
+        const inner = JSON.parse(parsed.message) as {
+          clientId?: string;
+          updatedAt?: number;
+        };
+        if (inner && inner.clientId && inner.clientId === localClientId) {
+          // Self-echo from this very tab — ignore to prevent infinite sync loop!
+          return { shouldSync: false };
+        }
+        return {
+          shouldSync: true,
+          remoteUpdatedAt: typeof inner?.updatedAt === 'number' ? inner.updatedAt : undefined,
+        };
+      } catch {
+        return { shouldSync: true };
+      }
+    }
+    return { shouldSync: true };
+  } catch {
+    return { shouldSync: false };
+  }
+}
+
+export async function pushVaultToCloud(
+  state: VaultState,
+  passcode: string,
+  options?: { notifyPeers?: boolean }
+): Promise<boolean> {
   const clean = normalizePasscode(passcode);
   if (!clean) return false;
   if (state.isUneditedDefault && !hasUserRecords(state)) return false;
@@ -692,11 +738,14 @@ export async function pushVaultToCloud(state: VaultState, passcode: string): Pro
     const compacted = compactStateForCloud(state);
     const cipher = await encryptVaultPayload(JSON.stringify(compacted), clean);
     const ok = await writePermanentCloud(id.vaultKey, cipher);
-    if (ok) {
-      // Optional best-effort SSE ping to notify other open windows (< 1s)
+    if (ok && options?.notifyPeers !== false) {
+      // Tag with LOCAL_CLIENT_ID so this very tab ignores its own echoed SSE notification!
       fetch(`${NTFY_BASE_URL}/${id.sseTopic}`, {
         method: 'POST',
-        body: JSON.stringify({ updatedAt: state.updatedAt || Date.now() }),
+        body: JSON.stringify({
+          clientId: LOCAL_CLIENT_ID,
+          updatedAt: state.updatedAt || Date.now(),
+        }),
       }).catch(() => {});
     }
     return ok;
@@ -737,9 +786,22 @@ export async function pullVaultFromCloud(
   return { state: null, matchedPasscode: normalizePasscode(passcode) };
 }
 
+export function statesMatchForCloud(a: VaultState | null, b: VaultState | null): boolean {
+  if (!a || !b) return false;
+  try {
+    return (
+      JSON.stringify(compactStateForCloud(a)) ===
+      JSON.stringify(compactStateForCloud(b))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function syncVaultWithCloud(
   localState: VaultState,
-  passcode: string
+  passcode: string,
+  options?: { pullOnly?: boolean; notifyPeers?: boolean }
 ): Promise<{
   merged: VaultState;
   synced: boolean;
@@ -752,13 +814,28 @@ export async function syncVaultWithCloud(
   const { state: remoteState, matchedPasscode } = await pullVaultFromCloud(clean);
   const effectivePass = matchedPasscode || clean;
   const merged = remoteState ? mergeVaultStates(localState, remoteState) : localState;
-  await saveLocalVaultState(merged);
+
+  if (!statesMatchForCloud(merged, localState)) {
+    await saveLocalVaultState(merged);
+  }
 
   if (merged.isUneditedDefault && !hasUserRecords(merged)) {
     return { merged, synced: Boolean(remoteState), matchedPasscode: effectivePass };
   }
 
-  const pushed = await pushVaultToCloud(merged, effectivePass);
+  // Only push back to cloud if we actually have changes remote doesn't already have!
+  // Prevents redundant writes & SSE ping-pong loops across open browsers/devices.
+  if (options?.pullOnly || (remoteState && statesMatchForCloud(merged, remoteState))) {
+    return {
+      merged,
+      synced: true,
+      matchedPasscode: effectivePass,
+    };
+  }
+
+  const pushed = await pushVaultToCloud(merged, effectivePass, {
+    notifyPeers: options?.notifyPeers ?? false,
+  });
   return {
     merged,
     synced: pushed || Boolean(remoteState),
@@ -768,20 +845,19 @@ export async function syncVaultWithCloud(
 
 export function subscribeToVaultSse(
   sseTopic: string,
-  onRemotePing: () => void
+  onRemotePing: (remoteUpdatedAt?: number) => void
 ): () => void {
   if (!sseTopic || typeof EventSource === 'undefined') return () => {};
   try {
     const es = new EventSource(`${NTFY_BASE_URL}/${sseTopic}/sse`);
+    let lastPingMs = 0;
     es.onmessage = (evt) => {
-      try {
-        const parsed = JSON.parse(evt.data);
-        if (parsed && parsed.event === 'message') {
-          onRemotePing();
-        }
-      } catch {
-        // ignore
-      }
+      const check = shouldProcessSseMessage(String(evt.data || ''));
+      if (!check.shouldSync) return;
+      const now = Date.now();
+      if (now - lastPingMs < 2500) return;
+      lastPingMs = now;
+      onRemotePing(check.remoteUpdatedAt);
     };
     return () => es.close();
   } catch {

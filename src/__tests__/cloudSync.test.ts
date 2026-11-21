@@ -8,6 +8,8 @@ import {
 import {
   mergeVaultStates,
   buildTextDbFormBody,
+  shouldProcessSseMessage,
+  getLocalSyncClientId,
 } from '../services/cloudSync';
 import {
   createInitialVaultState,
@@ -313,5 +315,25 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     expect(summary.overallGistZh.length).toBeGreaterThan(5);
     expect(summary.keyFacts.some((k) => k.includes('5,800'))).toBe(true);
     expect(summary.bulletPointsZh.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('ignores self-echo ntfy SSE pings to prevent infinite sync spinning loops', () => {
+    const myId = getLocalSyncClientId();
+    const selfEcho = JSON.stringify({
+      event: 'message',
+      message: JSON.stringify({ clientId: myId, updatedAt: 123456 }),
+    });
+    expect(shouldProcessSseMessage(selfEcho, myId).shouldSync).toBe(false);
+
+    const peerPing = JSON.stringify({
+      event: 'message',
+      message: JSON.stringify({ clientId: 'other_tab_xyz', updatedAt: 999999 }),
+    });
+    const peerRes = shouldProcessSseMessage(peerPing, myId);
+    expect(peerRes.shouldSync).toBe(true);
+    expect(peerRes.remoteUpdatedAt).toBe(999999);
+
+    const keepalive = JSON.stringify({ event: 'keepalive' });
+    expect(shouldProcessSseMessage(keepalive, myId).shouldSync).toBe(false);
   });
 });

@@ -4,6 +4,8 @@ import {
   MenuDishItem,
   MenuDishBbox,
   WordBreakdownItem,
+  LiveSubtitleSegment,
+  LiveConversationSummary,
 } from '../types/travel';
 import {
   LANGUAGES,
@@ -760,6 +762,447 @@ export async function transcribeAndTranslateAudioWithGemini(params: {
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * 去除 iOS Safari / Chrome Web Speech API 連續收音常見的重複前綴或尾端重疊句，
+ * 避免同一句話在字幕機裡被重複翻譯兩次！
+ */
+export function dedupeSpeechRecognitionChunk(
+  prevCommitted: string,
+  nextChunk: string
+): string {
+  const prev = prevCommitted.trim();
+  const next = nextChunk.trim();
+  if (!next) return '';
+  if (!prev) return next;
+
+  const norm = (s: string) =>
+    s.toLowerCase().replace(/[\s，。、！？,.\-!?;:：；「」『』]/g, '');
+  const pNorm = norm(prev);
+  const nNorm = norm(next);
+  if (!nNorm) return '';
+  // Exact duplicate or wholly contained inside the tail of previous utterance
+  if (pNorm === nNorm || (nNorm.length <= pNorm.length && pNorm.endsWith(nNorm))) {
+    return '';
+  }
+  // If WebKit emitted a cumulative result starting with the previous phrase, return only the new suffix
+  if (next.length > prev.length && next.toLowerCase().startsWith(prev.toLowerCase())) {
+    return next.slice(prev.length).replace(/^[\s，。、,]+/, '').trim();
+  }
+  // Detect suffix-prefix overlap (e.g. "明洞駅まで" + "までいくらですか")
+  const maxOverlap = Math.min(prev.length, next.length, 24);
+  for (let len = maxOverlap; len >= 3; len--) {
+    if (prev.slice(-len).toLowerCase() === next.slice(0, len).toLowerCase()) {
+      return next.slice(len).trim();
+    }
+  }
+  return next;
+}
+
+/**
+ * 判斷連續聽寫緩衝區是否已形成完整一句話（避免把「あの」「はい」「um」這種碎詞單獨丟給翻譯造成失真）
+ */
+export function shouldFlushSpeechBuffer(
+  buffer: string,
+  targetLang: LanguageCode
+): boolean {
+  const clean = buffer.trim();
+  if (!clean) return false;
+  if (/[。！？!?]$/.test(clean)) return true;
+  if (targetLang === 'ja' || targetLang === 'ko' || targetLang === 'yue') {
+    return clean.length >= 16;
+  }
+  const wordCount = clean.split(/\s+/).filter(Boolean).length;
+  return clean.length >= 36 || wordCount >= 7;
+}
+
+/**
+ * 邊講邊看中文預覽（輕量單向即時翻譯，跳過雙向回譯以壓低延遲至 ~300ms）
+ */
+export async function translateInterimPreviewFast(
+  text: string,
+  targetLang: LanguageCode
+): Promise<string> {
+  const clean = text.trim();
+  if (clean.length < 2) return '';
+  const gtx = await translateViaGoogleGtx(clean, targetLang, 'zh-TW');
+  if (gtx?.translated) {
+    return targetLang === 'yue'
+      ? annotateHongKongCantoneseMenuZh(clean, gtx.translated)
+      : gtx.translated;
+  }
+  const mm = await translateViaMyMemory(clean, targetLang, 'zh-TW');
+  if (mm) {
+    return targetLang === 'yue' ? annotateHongKongCantoneseMenuZh(clean, mm) : mm;
+  }
+  return '';
+}
+
+function detectConversationTopicLabel(combinedText: string): string {
+  if (/メニュー|注文|料理|食べ|飲|ラー|肉|辛|氷|円|お会計|埋單|走冰|少甜|菜|餐|點餐|食|辣|茶|order|table|menu|bill|spicy|delicious|맛|주문|계산/i.test(combinedText)) {
+    return '🍽️ 餐廳／點餐＆口味討論';
+  }
+  if (/駅|電車|ホーム|番線|バス|乗|出口|空港|ゲート|搭乗|出発|遅延|車|站|月台|登機|班機|地鐵|港鐵|gate|platform|train|flight|boarding|delay|station|지하철|역|공항/i.test(combinedText)) {
+    return '🚆 交通／地鐵／機場廣播';
+  }
+  if (/税|免税|会計|カード|現金|パスポート|サイズ|試着|割引|八達通|刷卡|價錢|幾多錢|退稅|買|tax|card|cash|size|price|passport|discount|카드|면세|가격/i.test(combinedText)) {
+    return '🛍️ 購物／價格＆付款討論';
+  }
+  if (/ホテル|部屋|チェックイン|荷物|予約|鍵|朝食|房間|入住|行李|退房|check-?in|room|luggage|hotel|reservation|예약|호텔|짐/i.test(combinedText)) {
+    return '🏨 飯店入住／預約確認';
+  }
+  return '💬 身邊旁人對話／日常解說';
+}
+
+/**
+ * ✨ 高精準「身邊多人對話錄音」AI 聽寫＋翻譯＋一句話看懂大意 (Gemini Multimodal Audio)
+ * 支援真實錄音（MediaRecorder 遠距／多人／雜音環境）與 iPhone 語音備忘錄匯入 (.m4a/.mp3/.wav/.webm)
+ */
+export async function transcribeAmbientConversationWithGemini(params: {
+  audioBase64: string;
+  mimeType: string;
+  targetLang: LanguageCode;
+  geminiApiKey: string;
+  geminiModel?: string;
+}): Promise<{
+  segments: Array<{
+    speakerLabel: string;
+    originalText: string;
+    translatedZh: string;
+    highlightKeywords: string[];
+  }>;
+  summary: LiveConversationSummary;
+} | null> {
+  const cleanKey = params.geminiApiKey.trim();
+  if (!cleanKey || !params.audioBase64) return null;
+  const langCfg = LANGUAGES[params.targetLang];
+  const model = params.geminiModel || 'gemini-2.5-flash';
+
+  const yueHint =
+    params.targetLang === 'yue'
+      ? '（特別注意：香港／澳門對話常夾雜廣東話與英文，請保留真實口語粵字並翻成台灣人秒懂的繁體中文，如有茶餐廳／港式用語請括號補充台灣說法）'
+      : '';
+
+  const prompt = `你是一位貼身隨行口譯員。使用者正用手機錄下「身邊的人的對話／店員解說／廣播」（預期主要語言：${langCfg.countryName}${langCfg.name}，也可能夾雜英文或其他語言）${yueHint}。
+即使環境有些嘈雜或講話速度很快，請仔細聆聽整段真實音訊，幫使用者完成兩件事：
+1. 用台灣人最自然好懂的繁體中文，整理出 **「一句話看懂他們在聊什麼（大意摘要）」** 與 **「2～4 條重點筆記」**。
+2. 將聽到的重要對話拆成逐句「原文 ↔ 台灣繁體中文」，若聽得出有多人交談請區分說話者（例如「🗣️ 說話者 A」、「🗣️ 說話者 B」、「📢 廣播／店員」）。
+3. 嚴禁捏造沒聽到的內容！若某句背景音太小或太吵聽不清楚，請老實標註「（此段背景音量較小或模糊）」。
+
+請嚴格只回傳 JSON 物件（不要 markdown code block）：
+{
+  "topicLabel": "帶表情符號的 10 字內主題標籤，例如：🍽️ 餐廳點餐與座位溝通",
+  "overallGistZh": "用 1～2 句超白話台灣繁體中文講出這段對話的整體大意與核心結論",
+  "bulletPointsZh": [
+    "重點一（誰提到什麼、或決定了什麼）",
+    "重點二（任何提醒、規定、時間或金額）"
+  ],
+  "toneOrMoodZh": "語氣與氛圍（例如：輕鬆閒聊、店員親切解說、緊急廣播提醒）",
+  "keyFacts": ["價格／時間／地點／人名／月台等關鍵字（無則空陣列）"],
+  "suggestedReply": {
+    "zh": "如果使用者現在想禮貌接話或回應，最實用的一句中文",
+    "foreign": "對應的道地${langCfg.name}說法",
+    "phoneticHint": "台灣空耳發音或提醒"
+  },
+  "segments": [
+    {
+      "speakerLabel": "🗣️ 說話者 A",
+      "originalText": "聽寫出的外文原文（若夾雜英文可照實寫）",
+      "translatedZh": "翻成自然台灣繁體中文"
+    }
+  ]
+}`;
+
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), 32000) : null;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+        model
+      )}:generateContent?key=${encodeURIComponent(cleanKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: params.mimeType || 'audio/webm',
+                    data: params.audioBase64,
+                  },
+                },
+                { text: prompt },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.15,
+            responseMimeType: 'application/json',
+          },
+        }),
+        signal: ctrl?.signal,
+      }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const rawText: string = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (!rawText) return null;
+    const cleaned = rawText.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+    const parsed = JSON.parse(cleaned);
+    if (!parsed || typeof parsed.overallGistZh !== 'string') return null;
+
+    const rawSegments = Array.isArray(parsed.segments) ? parsed.segments : [];
+    const segments: Array<{
+      speakerLabel: string;
+      originalText: string;
+      translatedZh: string;
+      highlightKeywords: string[];
+    }> = rawSegments
+      .filter(
+        (s: Record<string, unknown>) =>
+          s &&
+          (typeof s.originalText === 'string' || typeof s.translatedZh === 'string')
+      )
+      .map((s: Record<string, unknown>) => {
+        const orig = String(s.originalText || '').trim();
+        const zh = String(s.translatedZh || orig).trim();
+        return {
+          speakerLabel: String(s.speakerLabel || '🗣️ 對話片段').trim(),
+          originalText: orig || zh,
+          translatedZh:
+            params.targetLang === 'yue'
+              ? annotateHongKongCantoneseMenuZh(orig, zh)
+              : zh,
+          highlightKeywords: extractImportantKeywords(`${orig} ${zh}`),
+        };
+      });
+
+    const bullets: string[] = Array.isArray(parsed.bulletPointsZh)
+      ? parsed.bulletPointsZh.map((b: unknown) => String(b).trim()).filter(Boolean)
+      : [];
+    const keyFacts: string[] = Array.isArray(parsed.keyFacts)
+      ? parsed.keyFacts.map((k: unknown) => String(k).trim()).filter(Boolean)
+      : [];
+    const mergedFlowZh = segments.map((s) => `${s.speakerLabel}：${s.translatedZh}`).join('\n');
+
+    const sr = parsed.suggestedReply as Record<string, unknown> | undefined;
+    const suggestedReply =
+      sr && typeof sr.zh === 'string' && typeof sr.foreign === 'string' && sr.foreign.trim()
+        ? {
+            zh: String(sr.zh).trim(),
+            foreign: String(sr.foreign).trim(),
+            phoneticHint: sr.phoneticHint ? String(sr.phoneticHint).trim() : undefined,
+          }
+        : undefined;
+
+    return {
+      segments,
+      summary: {
+        topicLabel: String(parsed.topicLabel || '💬 身邊對話即時摘要').trim(),
+        overallGistZh: String(parsed.overallGistZh).trim(),
+        bulletPointsZh: bullets.slice(0, 5),
+        mergedFlowZh,
+        toneOrMoodZh: parsed.toneOrMoodZh ? String(parsed.toneOrMoodZh).trim() : undefined,
+        keyFacts: Array.from(
+          new Set([
+            ...keyFacts,
+            ...extractImportantKeywords(segments.map((s) => `${s.originalText} ${s.translatedZh}`).join(' ')),
+          ])
+        ).slice(0, 8),
+        suggestedReply,
+        engine: 'gemini-audio',
+        segmentCount: segments.length,
+        updatedAt: Date.now(),
+      },
+    };
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * 🧠 一鍵彙整目前所有即時字幕為「白話中文大意 ＋ 上下文重譯 ＋ 重點條列」！
+ * 雙軌支援：
+ * 1. 若有綁定 Gemini Key -> 呼叫 AI 深度歸納話題、誰問了什麼、結論與建議回應。
+ * 2. 免 API Key -> 把原本零碎的逐句外文合併成完整段落「連同上下文一起整段重譯」，大幅修正斷句誤譯並抓出關鍵數字／問句／主題重點！
+ */
+export async function summarizeLiveConversation(params: {
+  segments: LiveSubtitleSegment[];
+  targetLang: LanguageCode;
+  geminiApiKey?: string;
+  geminiModel?: string;
+}): Promise<LiveConversationSummary> {
+  const ordered = [...params.segments]
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .slice(-24);
+
+  if (ordered.length === 0) {
+    return {
+      topicLabel: '💬 尚無收音內容',
+      overallGistZh: '開始收音或錄下一段對話後，這裡會自動幫妳整理出「一句話大意」與重點條列。',
+      bulletPointsZh: [],
+      mergedFlowZh: '',
+      keyFacts: [],
+      engine: 'builtin-context',
+      segmentCount: 0,
+      updatedAt: Date.now(),
+    };
+  }
+
+  const langCfg = LANGUAGES[params.targetLang];
+  const transcriptLines = ordered
+    .map(
+      (s, i) =>
+        `${i + 1}. ${s.speakerLabel ? `[${s.speakerLabel}] ` : ''}${s.originalText}（初譯：${s.translatedZh}）`
+    )
+    .join('\n');
+
+  if (params.geminiApiKey && params.geminiApiKey.trim().length > 10) {
+    const cleanKey = params.geminiApiKey.trim();
+    const model = params.geminiModel || 'gemini-2.5-flash';
+    const prompt = `以下是使用者在${langCfg.countryName}用手機收音記下的「身邊人的對話／廣播紀錄」（依時間先後排序，語音辨識偶爾可能有同音字誤差，請依前後文幫他修正理解）：
+${transcriptLines}
+
+請用最自然好懂的台灣繁體中文，嚴格只回傳 JSON 物件（不要 markdown code block）：
+{
+  "topicLabel": "帶 emoji 的簡短主題標籤（10字內）",
+  "overallGistZh": "用 1～2 句超白話總結：這段對話到底在聊什麼／重點結論是什麼",
+  "bulletPointsZh": [
+    "重點 1（條列式，簡明清楚）",
+    "重點 2",
+    "重點 3"
+  ],
+  "mergedFlowZh": "將整段對話重新潤飾為通順易讀的繁體中文對話大意",
+  "toneOrMoodZh": "語氣氛圍（例如：親切招呼、快速詢問、日常聊天）",
+  "keyFacts": ["重要數字、金額、時間、地點、月台、條件（無則空陣列）"],
+  "suggestedReply": {
+    "zh": "使用者如果要禮貌回應，最推薦的一句中文",
+    "foreign": "對應的道地${langCfg.name}說法",
+    "phoneticHint": "台灣空耳發音"
+  }
+}`;
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 14000) : null;
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+          model
+        )}:generateContent?key=${encodeURIComponent(cleanKey)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.2,
+              responseMimeType: 'application/json',
+            },
+          }),
+          signal: ctrl?.signal,
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const rawText: string = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        if (rawText) {
+          const parsed = JSON.parse(rawText.replace(/^```json\s*/i, '').replace(/```$/i, '').trim());
+          if (parsed && typeof parsed.overallGistZh === 'string') {
+            const sr = parsed.suggestedReply as Record<string, unknown> | undefined;
+            return {
+              topicLabel: String(parsed.topicLabel || '💬 對話重點大意').trim(),
+              overallGistZh: String(parsed.overallGistZh).trim(),
+              bulletPointsZh: Array.isArray(parsed.bulletPointsZh)
+                ? parsed.bulletPointsZh.map((b: unknown) => String(b).trim()).filter(Boolean).slice(0, 5)
+                : [],
+              mergedFlowZh: String(parsed.mergedFlowZh || '').trim(),
+              toneOrMoodZh: parsed.toneOrMoodZh ? String(parsed.toneOrMoodZh).trim() : undefined,
+              keyFacts: Array.isArray(parsed.keyFacts)
+                ? parsed.keyFacts.map((k: unknown) => String(k).trim()).filter(Boolean).slice(0, 8)
+                : [],
+              suggestedReply:
+                sr && typeof sr.zh === 'string' && typeof sr.foreign === 'string' && sr.foreign.trim()
+                  ? {
+                      zh: String(sr.zh).trim(),
+                      foreign: String(sr.foreign).trim(),
+                      phoneticHint: sr.phoneticHint ? String(sr.phoneticHint).trim() : undefined,
+                    }
+                  : undefined,
+              engine: 'gemini-text',
+              segmentCount: ordered.length,
+              updatedAt: Date.now(),
+            };
+          }
+        }
+      }
+    } catch {
+      // Fallback gracefully to zero-key contextual summary
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  // Track 2: 100% Free Built-in Contextual Re-translation + Key Fact Extraction
+  const joinedForeign = ordered.map((s) => s.originalText.trim()).join('。 ');
+  const fallbackZhFlow = ordered.map((s) => s.translatedZh.trim()).join(' ');
+  const contextGtx = await translateViaGoogleGtx(joinedForeign, params.targetLang, 'zh-TW');
+  let mergedFlowZh = contextGtx?.translated?.trim() || fallbackZhFlow;
+  if (params.targetLang === 'yue') {
+    mergedFlowZh = annotateHongKongCantoneseMenuZh(joinedForeign, mergedFlowZh);
+  }
+
+  const allCombined = `${joinedForeign} ${fallbackZhFlow} ${mergedFlowZh}`;
+  const topicLabel = detectConversationTopicLabel(allCombined);
+  const keyFacts = Array.from(
+    new Set([
+      ...extractImportantKeywords(allCombined),
+      ...ordered.flatMap((s) => s.highlightKeywords || []),
+    ])
+  ).slice(0, 6);
+
+  const zhClauses = ordered.map((s) => s.translatedZh.trim()).filter(Boolean);
+  const questionClauses = zhClauses.filter((z) => /[？?嗎呢麼幾哪誰怎麼什麼]/.test(z));
+  const bullets: string[] = [];
+  if (keyFacts.length > 0) {
+    bullets.push(`關鍵數字／資訊：${keyFacts.join('、')}`);
+  }
+  if (questionClauses.length > 0) {
+    bullets.push(`對方提到的問題：「${questionClauses[questionClauses.length - 1]}」`);
+  }
+  const latestClause = zhClauses[zhClauses.length - 1];
+  if (latestClause && !bullets.some((b) => b.includes(latestClause))) {
+    bullets.push(`最新一句重點：${latestClause}`);
+  }
+  if (zhClauses.length > 1) {
+    const firstClause = zhClauses[0];
+    if (!bullets.some((b) => b.includes(firstClause))) {
+      bullets.unshift(`對話開頭提到：${firstClause}`);
+    }
+  }
+
+  const shortGist =
+    mergedFlowZh.length > 100
+      ? `${mergedFlowZh.slice(0, 98)}…`
+      : mergedFlowZh;
+
+  return {
+    topicLabel,
+    overallGistZh: shortGist,
+    bulletPointsZh: bullets.slice(0, 4),
+    mergedFlowZh,
+    toneOrMoodZh:
+      questionClauses.length > 0
+        ? `包含詢問／確認事項（共 ${ordered.length} 段）`
+        : `連續對話紀錄（共 ${ordered.length} 段）`,
+    keyFacts,
+    engine: 'builtin-context',
+    segmentCount: ordered.length,
+    updatedAt: Date.now(),
+  };
 }
 
 /**

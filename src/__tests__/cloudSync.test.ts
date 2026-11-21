@@ -27,6 +27,9 @@ import {
   extractMenuUrlsFromSearchMarkdown,
   extractRealMenuDishesFromWebMarkdown,
   annotateHongKongCantoneseMenuZh,
+  dedupeSpeechRecognitionChunk,
+  shouldFlushSpeechBuffer,
+  summarizeLiveConversation,
 } from '../services/translatorEngine';
 
 describe('BoboTalk Cloud Sync & Translator Engine', () => {
@@ -266,5 +269,49 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     expect(hkMenu.title).toContain('添好運');
     expect(hkMenu.localFoodPortalUrl).toContain('openrice.com');
     expect(hkMenu.items.some((i) => i.originalName.includes('叉燒包'))).toBe(true);
+  });
+
+  it('deduplicates overlapping speech recognition bursts, buffers fragments, and builds live conversation gist summary', async () => {
+    expect(dedupeSpeechRecognitionChunk('すみません', 'すみません')).toBe('');
+    expect(dedupeSpeechRecognitionChunk('すみません', 'すみません、お会計お願いします')).toBe(
+      'お会計お願いします'
+    );
+    expect(dedupeSpeechRecognitionChunk('明洞駅まで', '駅までいくらですか')).toBe(
+      'いくらですか'
+    );
+
+    expect(shouldFlushSpeechBuffer('あの', 'ja')).toBe(false);
+    expect(shouldFlushSpeechBuffer('はい、わかりました。', 'ja')).toBe(true);
+    expect(shouldFlushSpeechBuffer('um ok', 'en')).toBe(false);
+    expect(shouldFlushSpeechBuffer('Gate B14 boarding starts in 15 minutes!', 'en')).toBe(true);
+
+    const summary = await summarizeLiveConversation({
+      targetLang: 'ja',
+      segments: [
+        {
+          id: 's-2',
+          lang: 'ja',
+          originalText: 'お会計は5,800円になります。カード使えますか？',
+          translatedZh: '結帳總共是 5,800 日圓。請問可以刷卡嗎？',
+          highlightKeywords: ['5,800円'],
+          createdAt: 2000,
+          updatedAt: 2000,
+        },
+        {
+          id: 's-1',
+          lang: 'ja',
+          originalText: 'いらっしゃいませ、2名様ですか？',
+          translatedZh: '歡迎光臨，請問是兩位嗎？',
+          highlightKeywords: ['2名'],
+          createdAt: 1000,
+          updatedAt: 1000,
+        },
+      ],
+    });
+    expect(summary.segmentCount).toBe(2);
+    expect(summary.topicLabel).toContain('🍽️');
+    expect(summary.overallGistZh.length).toBeGreaterThan(5);
+    expect(summary.keyFacts.some((k) => k.includes('5,800'))).toBe(true);
+    expect(summary.bulletPointsZh.length).toBeGreaterThanOrEqual(2);
   });
 });

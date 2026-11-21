@@ -33,6 +33,11 @@ import {
   MapPin,
   ExternalLink,
   Video,
+  FileAudio,
+  Square,
+  ArrowDownUp,
+  MessageSquareText,
+  Check,
 } from 'lucide-react';
 import {
   VaultState,
@@ -41,6 +46,7 @@ import {
   PhraseCategory,
   DialogueTurn,
   LiveSubtitleSegment,
+  LiveConversationSummary,
   MenuScanSession,
   MenuDishItem,
   CustomPhraseCard,
@@ -80,6 +86,11 @@ import {
 import {
   translateTextDualEngine,
   transcribeAndTranslateAudioWithGemini,
+  transcribeAmbientConversationWithGemini,
+  summarizeLiveConversation,
+  dedupeSpeechRecognitionChunk,
+  shouldFlushSpeechBuffer,
+  translateInterimPreviewFast,
   analyzeMenuPhotoWithGemini,
   analyzeMenuPhotoFreeOcr,
   cropImageDataUrl,
@@ -165,10 +176,24 @@ export default function App() {
   const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
   const [editingTurnText, setEditingTurnText] = useState<string>('');
 
-  // Tab 2: Live Stream Subtitle state
+  // Tab 2: Live Stream Subtitle & Ambient Conversation Recorder state
   const [isLiveListening, setIsLiveListening] = useState(false);
   const [liveInterimText, setLiveInterimText] = useState('');
+  const [liveInterimZh, setLiveInterimZh] = useState('');
+  const [liveBufferPreview, setLiveBufferPreview] = useState('');
   const [liveManualInput, setLiveManualInput] = useState('');
+  const [liveElapsedSec, setLiveElapsedSec] = useState(0);
+  const [liveMicLevel, setLiveMicLevel] = useState(0);
+  const [liveAudioUrl, setLiveAudioUrl] = useState<string>('');
+  const [liveAudioMime, setLiveAudioMime] = useState<string>('audio/webm');
+  const [isProcessingLiveAudio, setIsProcessingLiveAudio] = useState(false);
+  const [liveSummary, setLiveSummary] = useState<LiveConversationSummary | null>(null);
+  const [isSummarizingLive, setIsSummarizingLive] = useState(false);
+  const [liveSortOrder, setLiveSortOrder] = useState<'chronological' | 'newest-first'>('chronological');
+  const [livePickupMode, setLivePickupMode] = useState<'ambient' | 'closeup'>('ambient');
+  const [editingLiveSegId, setEditingLiveSegId] = useState<string | null>(null);
+  const [editingLiveSegText, setEditingLiveSegText] = useState('');
+  const [liveAutoGistEnabled, setLiveAutoGistEnabled] = useState(true);
 
   // Tab 3: Menu Photo & Point-to-Order Card state
   const [activeMenuId, setActiveMenuId] = useState<string>('');
@@ -236,6 +261,20 @@ export default function App() {
   const audioChunksRef = useRef<Blob[]>([]);
   const liveRecRef = useRef<SpeechRecognitionInstance | null>(null);
   const isLiveListeningRef = useRef(false);
+  const liveAudioRecRef = useRef<MediaRecorder | null>(null);
+  const liveAudioStreamRef = useRef<MediaStream | null>(null);
+  const liveAudioChunksRef = useRef<Blob[]>([]);
+  const liveLastAudioBlobRef = useRef<Blob | null>(null);
+  const liveAudioCtxRef = useRef<AudioContext | null>(null);
+  const liveMeterRafRef = useRef<number | null>(null);
+  const liveTimerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const liveClauseBufferRef = useRef<string>('');
+  const liveFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveInterimTextRef = useRef<string>('');
+  const livePreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveLastCommittedTextRef = useRef<string>('');
+  const liveRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const activeLang: LanguageCode = vault.profile.activeLang || 'ja';
   const langCfg = LANGUAGES[activeLang] || LANGUAGES.ja;
@@ -403,6 +442,14 @@ export default function App() {
 
   // Set activeLang helper
   const handleSelectLanguage = (code: LanguageCode) => {
+    const nextChanged = vaultRef.current.profile.activeLang !== code;
+    vaultRef.current = {
+      ...vaultRef.current,
+      profile: {
+        ...vaultRef.current.profile,
+        activeLang: code,
+      },
+    };
     void commitVaultUpdate((prev) => ({
       ...prev,
       isUneditedDefault: false,
@@ -413,6 +460,14 @@ export default function App() {
         activeLang: code,
       },
     }));
+    if (nextChanged && isLiveListeningRef.current && liveRecRef.current) {
+      try {
+        liveRecRef.current.stop();
+      } catch {
+        // ignore
+      }
+      notify(`🔄 隨身收音已切換聽取【${LANGUAGES[code].flag} ${LANGUAGES[code].name}】！`);
+    }
   };
 
   // Set translation tone
@@ -781,12 +836,88 @@ export default function App() {
     }));
   };
 
-  // Tab 2: Continuous Live Stream Subtitle Listener
+  // Tab 2: Continuous Ambient Conversation Recorder & Instant Gist Subtitle Engine
+  const cleanupLiveAudioResources = useCallback(() => {
+    if (liveMeterRafRef.current !== null) {
+      cancelAnimationFrame(liveMeterRafRef.current);
+      liveMeterRafRef.current = null;
+    }
+    if (liveTimerIntervalRef.current) {
+      clearInterval(liveTimerIntervalRef.current);
+      liveTimerIntervalRef.current = null;
+    }
+    if (liveRestartTimerRef.current) {
+      clearTimeout(liveRestartTimerRef.current);
+      liveRestartTimerRef.current = null;
+    }
+    if (livePreviewTimerRef.current) {
+      clearTimeout(livePreviewTimerRef.current);
+      livePreviewTimerRef.current = null;
+    }
+    if (liveFlushTimerRef.current) {
+      clearTimeout(liveFlushTimerRef.current);
+      liveFlushTimerRef.current = null;
+    }
+    if (liveAudioCtxRef.current) {
+      try {
+        void liveAudioCtxRef.current.close();
+      } catch {
+        // ignore
+      }
+      liveAudioCtxRef.current = null;
+    }
+    if (liveAudioStreamRef.current) {
+      liveAudioStreamRef.current.getTracks().forEach((t) => t.stop());
+      liveAudioStreamRef.current = null;
+    }
+    setLiveMicLevel(0);
+  }, []);
+
+  const refreshLiveSummary = useCallback(
+    async (overrideSegments?: LiveSubtitleSegment[], silent = false) => {
+      const segs = overrideSegments ?? vaultRef.current.liveSubtitles;
+      if (segs.length === 0) {
+        setLiveSummary(null);
+        return;
+      }
+      setIsSummarizingLive(true);
+      try {
+        const res = await summarizeLiveConversation({
+          segments: segs,
+          targetLang: vaultRef.current.profile.activeLang,
+          geminiApiKey: vaultRef.current.profile.geminiApiKey,
+          geminiModel: vaultRef.current.profile.geminiModel,
+        });
+        setLiveSummary(res);
+        if (!silent) {
+          notify(
+            res.engine === 'gemini-text'
+              ? '✨ 已用 Gemini AI 彙整出最新對話大意與重點！'
+              : '🧠 已結合上下文整段重譯並更新「對話大意」！'
+          );
+        }
+      } catch {
+        if (!silent) notify('彙整大意時發生短暫錯誤，請再試一次。');
+      } finally {
+        setIsSummarizingLive(false);
+      }
+    },
+    [notify]
+  );
+
   const appendLiveSegment = useCallback(
-    async (foreignSpeech: string) => {
+    async (
+      foreignSpeech: string,
+      opts?: {
+        speakerLabel?: string;
+        sourceEngine?: 'speech' | 'gemini-audio' | 'manual';
+        skipAutoSummary?: boolean;
+      }
+    ) => {
       const clean = foreignSpeech.trim();
       if (!clean) return;
       const targetLang = vaultRef.current.profile.activeLang;
+      liveLastCommittedTextRef.current = clean;
       try {
         const res = await translateTextDualEngine({
           text: clean,
@@ -800,101 +931,583 @@ export default function App() {
         const seg: LiveSubtitleSegment = {
           id: `live-${now}-${Math.random().toString(36).slice(2, 6)}`,
           lang: targetLang,
+          speakerLabel: opts?.speakerLabel,
           originalText: clean,
           translatedZh: res.translatedText,
           romanization: res.romanization,
           highlightKeywords: res.highlightKeywords,
+          sourceEngine: opts?.sourceEngine || 'manual',
           createdAt: now,
           updatedAt: now,
         };
+        const nextList = [seg, ...vaultRef.current.liveSubtitles].slice(0, 80);
         await commitVaultUpdate((prev) => ({
           ...prev,
           isUneditedDefault: false,
           updatedAt: now,
           liveSubtitles: [seg, ...prev.liveSubtitles].slice(0, 80),
         }));
+        if (!opts?.skipAutoSummary && liveAutoGistEnabled) {
+          void refreshLiveSummary(nextList, true);
+        }
       } catch {
         // ignore transient error
       }
     },
-    [commitVaultUpdate]
+    [commitVaultUpdate, liveAutoGistEnabled, refreshLiveSummary]
   );
 
-  const toggleLiveStreamListening = useCallback(() => {
+  const flushLiveClauseBuffer = useCallback(
+    (extraTail?: string) => {
+      if (liveFlushTimerRef.current) {
+        clearTimeout(liveFlushTimerRef.current);
+        liveFlushTimerRef.current = null;
+      }
+      const buffered = liveClauseBufferRef.current.trim();
+      const tail = (extraTail || '').trim();
+      liveClauseBufferRef.current = '';
+      setLiveBufferPreview('');
+
+      let combined = buffered;
+      if (tail) {
+        const dedupedTail = dedupeSpeechRecognitionChunk(buffered, tail);
+        if (dedupedTail) {
+          const isCjk =
+            vaultRef.current.profile.activeLang === 'ja' ||
+            vaultRef.current.profile.activeLang === 'yue';
+          combined = combined
+            ? `${combined}${isCjk ? '' : ' '}${dedupedTail}`
+            : dedupedTail;
+        }
+      }
+      if (!combined) return;
+      const fresh = dedupeSpeechRecognitionChunk(
+        liveLastCommittedTextRef.current,
+        combined
+      );
+      if (fresh.length >= 2) {
+        void appendLiveSegment(fresh, { sourceEngine: 'speech' });
+      }
+    },
+    [appendLiveSegment]
+  );
+
+  const scheduleLiveInterimPreview = useCallback((rawText: string) => {
+    const combined = `${liveClauseBufferRef.current} ${rawText}`.trim();
+    if (combined.length < 2) {
+      setLiveInterimZh('');
+      return;
+    }
+    if (livePreviewTimerRef.current) {
+      clearTimeout(livePreviewTimerRef.current);
+    }
+    livePreviewTimerRef.current = setTimeout(async () => {
+      const previewZh = await translateInterimPreviewFast(
+        combined,
+        vaultRef.current.profile.activeLang
+      );
+      if (previewZh && isLiveListeningRef.current) {
+        setLiveInterimZh(previewZh);
+      }
+    }, 650);
+  }, []);
+
+  const analyzeLiveAudioBlobWithGemini = useCallback(
+    async (blob: Blob, labelNote?: string) => {
+      const apiKey = (vaultRef.current.profile.geminiApiKey || '').trim();
+      if (!apiKey) {
+        notify(
+          '💡 已保留錄音檔可重聽！若要 AI 直接聽懂「整段真實錄音＋區分多位說話者」，請點右上 ⚙️ 填入免費 Gemini API Key。'
+        );
+        return false;
+      }
+      if (blob.size > 18 * 1024 * 1024) {
+        notify('⚠️ 音訊檔超過 18MB，請分段錄製或剪短後再進行 AI 聽寫！');
+        return false;
+      }
+      setIsProcessingLiveAudio(true);
+      try {
+        const base64Data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(new Error('讀取音訊失敗'));
+          reader.onloadend = () => {
+            const s = String(reader.result || '');
+            const idx = s.indexOf(',');
+            resolve(idx >= 0 ? s.slice(idx + 1) : '');
+          };
+          reader.readAsDataURL(blob);
+        });
+        if (!base64Data) return false;
+        const mimeType =
+          (blob.type || 'audio/webm').split(';')[0] || 'audio/webm';
+        const aiRes = await transcribeAmbientConversationWithGemini({
+          audioBase64: base64Data,
+          mimeType,
+          targetLang: vaultRef.current.profile.activeLang,
+          geminiApiKey: apiKey,
+          geminiModel: vaultRef.current.profile.geminiModel,
+        });
+        if (!aiRes) {
+          notify('⚠️ AI 音訊解析逾時或失敗，請確認錄音音量或 Gemini API Key。');
+          return false;
+        }
+        const now = Date.now();
+        const newSegs: LiveSubtitleSegment[] = aiRes.segments.map((s, idx) => ({
+          id: `live-ai-${now}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+          lang: vaultRef.current.profile.activeLang,
+          speakerLabel: labelNote ? `${s.speakerLabel} (${labelNote})` : s.speakerLabel,
+          originalText: s.originalText,
+          translatedZh: s.translatedZh,
+          highlightKeywords: s.highlightKeywords,
+          sourceEngine: 'gemini-audio',
+          createdAt: now + idx,
+          updatedAt: now + idx,
+        }));
+        if (newSegs.length > 0) {
+          // Insert reversed so chronological sort keeps order and newest-first shows latest at top
+          const insertedNewestFirst = [...newSegs].reverse();
+          await commitVaultUpdate((prev) => ({
+            ...prev,
+            isUneditedDefault: false,
+            updatedAt: now,
+            liveSubtitles: [...insertedNewestFirst, ...prev.liveSubtitles].slice(0, 80),
+          }));
+        }
+        setLiveSummary(aiRes.summary);
+        notify(
+          `✨ Gemini AI 已聽寫完成 ${newSegs.length} 段對話並產出「一句話中文大意」！`
+        );
+        return true;
+      } catch {
+        notify('⚠️ 音訊解析失敗，請再試一次。');
+        return false;
+      } finally {
+        setIsProcessingLiveAudio(false);
+      }
+    },
+    [commitVaultUpdate, notify]
+  );
+
+  const handleUploadLiveAudioFile = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      if (liveAudioUrl) {
+        try {
+          URL.revokeObjectURL(liveAudioUrl);
+        } catch {
+          // ignore
+        }
+      }
+      const nextUrl = URL.createObjectURL(file);
+      liveLastAudioBlobRef.current = file;
+      setLiveAudioUrl(nextUrl);
+      setLiveAudioMime(file.type || 'audio/mp4');
+
+      const apiKey = (vaultRef.current.profile.geminiApiKey || '').trim();
+      if (!apiKey) {
+        notify(
+          '📁 已載入錄音檔（可先在下方播放）！匯入音檔自動轉中文大意需先至右上 ⚙️ 綁定免費 Gemini API Key。'
+        );
+        setShowSettingsModal(true);
+        return;
+      }
+      notify(`🎙️ 正在用 Gemini AI 精準聽寫「${file.name}」並抓出對話大意...`);
+      await analyzeLiveAudioBlobWithGemini(file, file.name.slice(0, 12));
+    },
+    [analyzeLiveAudioBlobWithGemini, liveAudioUrl, notify]
+  );
+
+  const handleEditLiveSegmentSave = useCallback(
+    async (segId: string, nextOrigRaw: string) => {
+      const nextOrig = nextOrigRaw.trim();
+      setEditingLiveSegId(null);
+      if (!nextOrig) return;
+      const targetSeg = vaultRef.current.liveSubtitles.find((x) => x.id === segId);
+      if (!targetSeg) return;
+      if (targetSeg.originalText.trim() === nextOrig) return;
+      try {
+        const res = await translateTextDualEngine({
+          text: nextOrig,
+          direction: 'foreign-to-zh',
+          targetLang: targetSeg.lang,
+          tone: 'concise',
+          geminiApiKey: vaultRef.current.profile.geminiApiKey,
+          geminiModel: vaultRef.current.profile.geminiModel,
+        });
+        const now = Date.now();
+        const updatedList = vaultRef.current.liveSubtitles.map((x) =>
+          x.id === segId
+            ? {
+                ...x,
+                originalText: nextOrig,
+                translatedZh: res.translatedText,
+                romanization: res.romanization,
+                highlightKeywords: res.highlightKeywords,
+                updatedAt: now,
+              }
+            : x
+        );
+        await commitVaultUpdate((prev) => ({
+          ...prev,
+          isUneditedDefault: false,
+          updatedAt: now,
+          liveSubtitles: updatedList,
+        }));
+        notify('✅ 已修正原文並即時重新翻譯！');
+        if (liveAutoGistEnabled) {
+          void refreshLiveSummary(updatedList, true);
+        }
+      } catch {
+        notify('重新翻譯時發生錯誤，請稍後再試。');
+      }
+    },
+    [commitVaultUpdate, liveAutoGistEnabled, notify, refreshLiveSummary]
+  );
+
+  const handleClearAllLiveSubtitles = useCallback(async () => {
+    if (vaultRef.current.liveSubtitles.length === 0) return;
+    const now = Date.now();
+    await commitVaultUpdate((prev) => {
+      const deleted = { ...prev.deletedIds };
+      prev.liveSubtitles.forEach((s) => {
+        deleted[s.id] = now;
+      });
+      return {
+        ...prev,
+        isUneditedDefault: false,
+        updatedAt: now,
+        liveSubtitles: [],
+        deletedIds: deleted,
+      };
+    });
+    setLiveSummary(null);
+    liveLastCommittedTextRef.current = '';
+    notify('🧹 已清空本輪收音字幕與大意，可開始錄下一段對話！');
+  }, [commitVaultUpdate, notify]);
+
+  const toggleLiveStreamListening = useCallback(async () => {
     if (isLiveListeningRef.current) {
       isLiveListeningRef.current = false;
       setIsLiveListening(false);
+
+      // Flush ANY buffered or interim text BEFORE stopping so we never drop the last sentence!
+      const leftoverInterim = liveInterimTextRef.current;
+      liveInterimTextRef.current = '';
       setLiveInterimText('');
+      setLiveInterimZh('');
+      flushLiveClauseBuffer(leftoverInterim);
+
       try {
         liveRecRef.current?.stop();
       } catch {
         // ignore
       }
       liveRecRef.current = null;
+
+      // Stop real MediaRecorder and produce playable audio + auto AI/context summary!
+      const activeAudioRec = liveAudioRecRef.current;
+      liveAudioRecRef.current = null;
+      if (activeAudioRec && activeAudioRec.state !== 'inactive') {
+        activeAudioRec.onstop = () => {
+          const mime = activeAudioRec.mimeType || 'audio/webm';
+          const blob = new Blob(liveAudioChunksRef.current, { type: mime });
+          liveAudioChunksRef.current = [];
+          cleanupLiveAudioResources();
+          if (blob.size > 1500) {
+            liveLastAudioBlobRef.current = blob;
+            setLiveAudioMime(mime);
+            setLiveAudioUrl((prevUrl) => {
+              if (prevUrl) {
+                try {
+                  URL.revokeObjectURL(prevUrl);
+                } catch {
+                  // ignore
+                }
+              }
+              return URL.createObjectURL(blob);
+            });
+            if ((vaultRef.current.profile.geminiApiKey || '').trim().length > 10) {
+              notify('✨ 錄音完成！正將真實音檔交給 Gemini AI 精準轉中文＋抓大意...');
+              void analyzeLiveAudioBlobWithGemini(blob);
+              return;
+            }
+          }
+          setTimeout(() => {
+            if (vaultRef.current.liveSubtitles.length > 0) {
+              void refreshLiveSummary(vaultRef.current.liveSubtitles, false);
+            }
+          }, 700);
+        };
+        try {
+          activeAudioRec.stop();
+        } catch {
+          cleanupLiveAudioResources();
+        }
+      } else {
+        cleanupLiveAudioResources();
+        setTimeout(() => {
+          if (vaultRef.current.liveSubtitles.length > 0) {
+            void refreshLiveSummary(vaultRef.current.liveSubtitles, false);
+          }
+        }, 700);
+      }
       return;
     }
 
     const SpeechCtor = getSpeechRecognitionCtor();
-    if (!SpeechCtor) {
-      notify('此裝置瀏覽器不支援連續串流收音，您可點選下方廣播模擬範例或手動貼上聽寫！');
+    const hasMediaRecorder =
+      typeof navigator !== 'undefined' &&
+      Boolean(navigator.mediaDevices?.getUserMedia) &&
+      typeof MediaRecorder !== 'undefined';
+
+    if (!SpeechCtor && !hasMediaRecorder) {
+      notify('此裝置瀏覽器不支援麥克風收音，您可點選「📁 匯入錄音檔」或手動貼上聽寫！');
       return;
     }
 
-    try {
-      const rec = new SpeechCtor();
-      rec.lang = langCfg.bcp47;
-      rec.continuous = true;
-      rec.interimResults = true;
-      let lastFinalIndex = -1;
+    isLiveListeningRef.current = true;
+    setIsLiveListening(true);
+    setLiveElapsedSec(0);
+    liveClauseBufferRef.current = '';
+    liveInterimTextRef.current = '';
+    setLiveBufferPreview('');
+    setLiveInterimText('');
+    setLiveInterimZh('');
 
-      rec.onresult = (event: unknown) => {
-        const e = event as {
-          results?: ArrayLike<{
-            isFinal?: boolean;
-            0?: { transcript?: string };
-          }>;
-        };
-        if (!e.results) return;
-        let interim = '';
-        for (let i = 0; i < e.results.length; i++) {
-          const item = e.results[i];
-          const txt = item[0]?.transcript || '';
-          if (item.isFinal) {
-            if (i > lastFinalIndex && txt.trim()) {
-              lastFinalIndex = i;
-              void appendLiveSegment(txt.trim());
-            }
-          } else {
-            interim += txt;
-          }
+    const startedAt = Date.now();
+    liveTimerIntervalRef.current = setInterval(() => {
+      setLiveElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    }, 500);
+
+    // 1. Start real MediaRecorder audio capture + live microphone level meter (works even without SpeechRecognition!)
+    if (hasMediaRecorder) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            autoGainControl: livePickupMode === 'ambient',
+            noiseSuppression: true,
+            echoCancellation: livePickupMode === 'closeup',
+          },
+        });
+        if (!isLiveListeningRef.current) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
         }
-        setLiveInterimText(interim.trim());
-      };
+        liveAudioStreamRef.current = stream;
+        liveAudioChunksRef.current = [];
+        const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : MediaRecorder.isTypeSupported('audio/mp4')
+          ? 'audio/mp4'
+          : '';
+        const recorder = preferredMime
+          ? new MediaRecorder(stream, { mimeType: preferredMime })
+          : new MediaRecorder(stream);
+        recorder.ondataavailable = (ev) => {
+          if (ev.data && ev.data.size > 0) {
+            liveAudioChunksRef.current.push(ev.data);
+          }
+        };
+        liveAudioRecRef.current = recorder;
+        recorder.start(1000);
 
-      rec.onerror = () => {};
-      rec.onend = () => {
-        if (isLiveListeningRef.current) {
-          try {
-            lastFinalIndex = -1;
-            rec.start();
-          } catch {
+        // Live audio volume meter so user knows whether mic is clearly hearing the people nearby
+        const AudioCtxCtor =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext?: typeof AudioContext })
+            .webkitAudioContext;
+        if (AudioCtxCtor) {
+          const ctx = new AudioCtxCtor();
+          liveAudioCtxRef.current = ctx;
+          const src = ctx.createMediaStreamSource(stream);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 256;
+          src.connect(analyser);
+          const dataArr = new Uint8Array(analyser.frequencyBinCount);
+          const tick = () => {
+            if (!isLiveListeningRef.current) return;
+            analyser.getByteTimeDomainData(dataArr);
+            let sumSq = 0;
+            for (let i = 0; i < dataArr.length; i++) {
+              const v = (dataArr[i] - 128) / 128;
+              sumSq += v * v;
+            }
+            const rms = Math.sqrt(sumSq / dataArr.length);
+            setLiveMicLevel(Math.min(100, Math.round(rms * 380)));
+            liveMeterRafRef.current = requestAnimationFrame(tick);
+          };
+          tick();
+        }
+      } catch {
+        // MediaRecorder optional if mic already held by SpeechRecognition on older iOS Safari
+      }
+    }
+
+    // 2. Start smart-buffered Web Speech Recognition (with chunk coalescing, dedupe, and live Chinese preview)
+    const spawnSpeechRec = () => {
+      if (!SpeechCtor || !isLiveListeningRef.current) return;
+      try {
+        const currentCfg = LANGUAGES[vaultRef.current.profile.activeLang] || langCfg;
+        const rec = new SpeechCtor();
+        rec.lang = currentCfg.bcp47;
+        rec.continuous = true;
+        rec.interimResults = true;
+        let lastFinalIdx = -1;
+
+        rec.onresult = (event: unknown) => {
+          const e = event as {
+            results?: ArrayLike<{
+              isFinal?: boolean;
+              0?: { transcript?: string; confidence?: number };
+            }>;
+          };
+          if (!e.results) return;
+          let interim = '';
+          for (let i = 0; i < e.results.length; i++) {
+            const item = e.results[i];
+            const txt = (item[0]?.transcript || '').trim();
+            const conf = item[0]?.confidence;
+            if (!txt) continue;
+            if (item.isFinal) {
+              if (i > lastFinalIdx) {
+                lastFinalIdx = i;
+                // Skip tiny extremely-low-confidence background hallucinations
+                if (typeof conf === 'number' && conf > 0 && conf < 0.22 && txt.length < 4) {
+                  continue;
+                }
+                const targetCode = vaultRef.current.profile.activeLang;
+                const cleanPiece = dedupeSpeechRecognitionChunk(
+                  liveClauseBufferRef.current || liveLastCommittedTextRef.current,
+                  txt
+                );
+                if (cleanPiece) {
+                  const joinSep =
+                    targetCode === 'ja' || targetCode === 'yue' ? '' : ' ';
+                  liveClauseBufferRef.current = liveClauseBufferRef.current
+                    ? `${liveClauseBufferRef.current}${joinSep}${cleanPiece}`
+                    : cleanPiece;
+                  setLiveBufferPreview(liveClauseBufferRef.current);
+                  scheduleLiveInterimPreview(interim);
+
+                  if (shouldFlushSpeechBuffer(liveClauseBufferRef.current, targetCode)) {
+                    flushLiveClauseBuffer();
+                  } else {
+                    if (liveFlushTimerRef.current) {
+                      clearTimeout(liveFlushTimerRef.current);
+                    }
+                    // Wait 1.6s of silence to coalesce rapid fragmented words into a complete sentence!
+                    liveFlushTimerRef.current = setTimeout(() => {
+                      flushLiveClauseBuffer();
+                    }, 1600);
+                  }
+                }
+              }
+            } else {
+              interim += (interim ? ' ' : '') + txt;
+            }
+          }
+          const cleanInterim = interim.trim();
+          liveInterimTextRef.current = cleanInterim;
+          setLiveInterimText(cleanInterim);
+          if (cleanInterim) {
+            scheduleLiveInterimPreview(cleanInterim);
+          }
+        };
+
+        rec.onerror = (ev: unknown) => {
+          const errCode = (ev as { error?: string })?.error;
+          if (errCode === 'not-allowed' || errCode === 'service-not-allowed') {
             isLiveListeningRef.current = false;
             setIsLiveListening(false);
+            cleanupLiveAudioResources();
+            notify('⚠️ 請允許瀏覽器麥克風權限才能進行收音字幕！');
+          } else if (
+            errCode === 'audio-capture' &&
+            liveAudioStreamRef.current &&
+            (vaultRef.current.profile.geminiApiKey || '').trim().length <= 10
+          ) {
+            // On iOS Safari, Web Speech API and MediaRecorder may compete for the single mic session.
+            // Without an AI key, release MediaRecorder so live SpeechRecognition takes priority!
+            try {
+              liveAudioRecRef.current?.stop();
+            } catch {
+              // ignore
+            }
+            liveAudioRecRef.current = null;
+            liveAudioStreamRef.current.getTracks().forEach((t) => t.stop());
+            liveAudioStreamRef.current = null;
+            if (liveMeterRafRef.current !== null) {
+              cancelAnimationFrame(liveMeterRafRef.current);
+              liveMeterRafRef.current = null;
+            }
+            if (liveAudioCtxRef.current) {
+              try {
+                void liveAudioCtxRef.current.close();
+              } catch {
+                // ignore
+              }
+              liveAudioCtxRef.current = null;
+            }
           }
-        }
-      };
+        };
 
-      liveRecRef.current = rec;
-      isLiveListeningRef.current = true;
-      setIsLiveListening(true);
-      rec.start();
-      notify(`📻 已開啟【${langCfg.flag} ${langCfg.name}】隨身連續收音字幕機！`);
-    } catch {
-      isLiveListeningRef.current = false;
-      setIsLiveListening(false);
-      notify('無法啟動連續收音，請確認已允許麥克風權限。');
+        rec.onend = () => {
+          // Commit any unfinished interim speech before safely restarting WebKit SpeechRecognition!
+          if (liveInterimTextRef.current.trim()) {
+            const leftover = liveInterimTextRef.current.trim();
+            liveInterimTextRef.current = '';
+            setLiveInterimText('');
+            flushLiveClauseBuffer(leftover);
+          }
+          if (isLiveListeningRef.current) {
+            liveRestartTimerRef.current = setTimeout(() => {
+              if (isLiveListeningRef.current) {
+                spawnSpeechRec();
+              }
+            }, 260);
+          }
+        };
+
+        liveRecRef.current = rec;
+        rec.start();
+      } catch {
+        // MediaRecorder audio recording still runs as backup!
+      }
+    };
+
+    if (SpeechCtor) {
+      spawnSpeechRec();
     }
-  }, [langCfg, appendLiveSegment, notify]);
+
+    notify(
+      livePickupMode === 'ambient'
+        ? `🎙️ 已開啟【${langCfg.flag} ${langCfg.name}】身邊對話遠距收音（錄音＋即時中文字幕）！`
+        : `📻 已開啟【${langCfg.flag} ${langCfg.name}】近距離廣播收音！`
+    );
+  }, [
+    analyzeLiveAudioBlobWithGemini,
+    cleanupLiveAudioResources,
+    flushLiveClauseBuffer,
+    langCfg,
+    livePickupMode,
+    notify,
+    refreshLiveSummary,
+    scheduleLiveInterimPreview,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      isLiveListeningRef.current = false;
+      try {
+        liveRecRef.current?.stop();
+      } catch {
+        // ignore
+      }
+      cleanupLiveAudioResources();
+    };
+  }, [cleanupLiveAudioResources]);
 
   // Tab 3: Menu sessions & Real Photo OCR Scanner!
   const currentMenuSession: MenuScanSession | null = useMemo(() => {
@@ -3008,48 +3621,235 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* TAB 2: 📻 隨身字幕機 (Live Broadcast & Tour Guide Stream)   */}
+        {/* TAB 2: 📻 隨身對話收音＆大意字幕機 (Ambient Live + Summary) */}
         {/* ========================================================= */}
         {activeTab === 'live' && (
           <div className="space-y-3.5">
+            {/* Control Deck Card */}
             <section className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] shadow-card p-4 space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-base font-black text-[#2D251E] flex items-center gap-1.5">
-                    <Radio className="w-4 h-4 text-[#C83D33]" />
-                    <span>📻 隨身連續收音字幕機（廣播／導覽／長篇解說）</span>
-                  </h3>
-                  <p className="text-xs text-[#5C5044] mt-0.5">
-                    在機場聽登機門廣播、搭電車聽臨時通知、或餐廳店員快速解說用餐規定時，自動連續聽寫【{langCfg.flag}
-                    {langCfg.name}】並即時翻成繁體中文字幕＋高亮數字重點！
+              <div className="flex items-start justify-between gap-2 flex-wrap">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <h3 className="text-base font-black text-[#2D251E] flex items-center gap-1.5">
+                      <Radio className="w-4 h-4 text-[#C83D33]" />
+                      <span>📻 隨身對話收音＆大意字幕機</span>
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full bg-[#F2CA62]/60 border border-[#C48E63] text-[10px] font-black text-[#2D251E]">
+                      {langCfg.flag} {langCfg.name}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#5C5044] mt-0.5 leading-relaxed">
+                    身邊有人在講話、店員解說或廣播時，一邊錄音一邊即時轉中文預覽；停下來就幫妳整段重譯並產出「<strong>🧠 一句話看懂大意</strong>」！
                   </p>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              {/* Engine Accuracy Status Banner (Honest transparency!) */}
+              <div className="flex items-center justify-between gap-2 flex-wrap px-3 py-2 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9] text-[11px]">
+                {(vault.profile.geminiApiKey || '').trim().length > 10 ? (
+                  <span className="font-black text-emerald-800 flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                    <span>
+                      高精準 AI 模式已啟用（停錄後自動聽真實錄音檔＋區分說話者 A/B＋抓大意）
+                    </span>
+                  </span>
+                ) : (
+                  <>
+                    <span className="font-bold text-[#5C5044] leading-snug">
+                      🟢 <strong>免金鑰即時模式</strong>（遠距收音＋自動斷句合併＋上下文整段重譯）。若現場吵雜／多人交談，綁免費 Gemini Key 可直接聽真實錄音檔更準！
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void openSettingsAndLoadSnapshots()}
+                      className="px-2.5 py-1 rounded-xl bg-white hover:bg-[#F2CA62]/50 border border-[#C48E63] text-[10px] font-black text-[#2D251E] shrink-0"
+                    >
+                      ⚙️ 綁定 AI Key
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Mic Pickup Sensitivity Switcher */}
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9]">
                 <button
                   type="button"
-                  onClick={toggleLiveStreamListening}
+                  disabled={isLiveListening}
+                  onClick={() => setLivePickupMode('ambient')}
+                  className={`py-1.5 px-2 rounded-xl text-[11px] font-black text-center transition ${
+                    livePickupMode === 'ambient'
+                      ? 'bg-[#F2CA62] text-[#2D251E] border border-[#C48E63] shadow-sm'
+                      : 'text-[#5C5044] hover:text-[#2D251E]'
+                  } ${isLiveListening ? 'opacity-70 cursor-not-allowed' : ''}`}
+                >
+                  📡 旁人對話／遠距增音（推薦）
+                </button>
+                <button
+                  type="button"
+                  disabled={isLiveListening}
+                  onClick={() => setLivePickupMode('closeup')}
+                  className={`py-1.5 px-2 rounded-xl text-[11px] font-black text-center transition ${
+                    livePickupMode === 'closeup'
+                      ? 'bg-[#F2CA62] text-[#2D251E] border border-[#C48E63] shadow-sm'
+                      : 'text-[#5C5044] hover:text-[#2D251E]'
+                  } ${isLiveListening ? 'opacity-70 cursor-not-allowed' : ''}`}
+                >
+                  👂 近距離對話／抗回音
+                </button>
+              </div>
+
+              {/* Primary Record Button + Upload Voice Memo */}
+              <div className="flex flex-col sm:flex-row items-stretch gap-2">
+                <button
+                  type="button"
+                  disabled={isProcessingLiveAudio}
+                  onClick={() => void toggleLiveStreamListening()}
                   className={`flex-1 py-3 px-4 rounded-2xl font-black text-sm flex items-center justify-center gap-2 border-2 transition active:scale-95 ${
                     isLiveListening
                       ? 'bg-[#C83D33] text-white border-[#2D251E] shadow-pop'
                       : 'bg-[#F2CA62] text-[#2D251E] border-[#C48E63] shadow-sm'
                   }`}
                 >
-                  <Radio
-                    className={`w-4 h-4 ${isLiveListening ? 'animate-spin' : ''}`}
-                  />
-                  <span>
-                    {isLiveListening
-                      ? `⏸️ 停止連續收音（正在聽取${langCfg.name}...）`
-                      : `▶️ 開始連續收音即時字幕（聽${langCfg.flag}${langCfg.name}）`}
-                  </span>
+                  {isLiveListening ? (
+                    <>
+                      <Square className="w-4 h-4 fill-white" />
+                      <span>
+                        ⏹️ 停止並產出中文大意（{String(Math.floor(liveElapsedSec / 60)).padStart(2, '0')}:
+                        {String(liveElapsedSec % 60).padStart(2, '0')}）
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <Mic className="w-4 h-4" />
+                      <span>
+                        🎙️ 開始錄音即時轉中文（聽{langCfg.flag}{langCfg.name}）
+                      </span>
+                    </>
+                  )}
+                </button>
+
+                <input
+                  ref={liveFileInputRef}
+                  type="file"
+                  accept="audio/*,.m4a,.mp3,.wav,.webm,.ogg,.aac"
+                  onChange={(e) => void handleUploadLiveAudioFile(e)}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  disabled={isLiveListening || isProcessingLiveAudio}
+                  onClick={() => liveFileInputRef.current?.click()}
+                  className="px-3.5 py-2.5 rounded-2xl bg-white hover:bg-[#EFECE4] border border-[#DDD7C9] text-xs font-black text-[#2D251E] inline-flex items-center justify-center gap-1.5 shrink-0 transition active:scale-95"
+                  title="匯入 iPhone 語音備忘錄或手機錄音檔 (.m4a/.mp3/.wav)"
+                >
+                  <FileAudio className="w-4 h-4 text-[#C48E63]" />
+                  <span>📁 匯入錄音檔</span>
                 </button>
               </div>
 
+              {/* Active Recording Status: Live Waveform Meter + Real-Time Chinese Preview! */}
               {isLiveListening && (
-                <div className="p-3 rounded-2xl bg-[#EFECE4] border border-[#C48E63] text-xs font-bold text-[#2D251E]">
-                  🎙️ 即時收音串流中：{liveInterimText || `請將手機靠近${langCfg.name}廣播或說話者...`}
+                <div className="p-3.5 rounded-2xl bg-white border-2 border-[#C83D33]/60 space-y-2 shadow-sm">
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-black">
+                    <span className="text-[#C83D33] flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-[#C83D33] animate-ping" />
+                      REC {String(Math.floor(liveElapsedSec / 60)).padStart(2, '0')}:
+                      {String(liveElapsedSec % 60).padStart(2, '0')} ・ 即時收音中
+                    </span>
+                    <span className="text-[#5C5044]">
+                      {liveMicLevel >= 18
+                        ? '🟢 收音音量清晰'
+                        : liveMicLevel >= 6
+                        ? '🟡 稍微靠近一點更清楚'
+                        : '⚪ 等待說話聲...'}
+                    </span>
+                  </div>
+                  {/* Live Microphone Level Bar */}
+                  <div className="w-full h-2 rounded-full bg-[#EFECE4] overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-100 rounded-full ${
+                        liveMicLevel >= 18 ? 'bg-emerald-500' : 'bg-[#F2CA62]'
+                      }`}
+                      style={{ width: `${Math.max(4, liveMicLevel)}%` }}
+                    />
+                  </div>
+                  <div className="text-xs font-semibold text-[#5C5044] leading-relaxed">
+                    🗣️ 原文緩衝：
+                    {`${liveBufferPreview} ${liveInterimText}`.trim() ||
+                      `正在專心聽身邊的${langCfg.name}對話（會自動合併碎句再翻譯，不會漏字）...`}
+                  </div>
+                  {liveInterimZh && (
+                    <div className="p-2.5 rounded-xl bg-[#F2CA62]/30 border border-[#C48E63] text-sm font-black text-[#2D251E]">
+                      🇹🇼 即時中文預覽：{liveInterimZh}
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <span className="text-[10px] text-[#8A7E70]">
+                      說話停頓 1.6 秒自動成句，或點右鈕立即切句翻譯
+                    </span>
+                    {(liveBufferPreview || liveInterimText) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const tail = liveInterimTextRef.current;
+                          liveInterimTextRef.current = '';
+                          setLiveInterimText('');
+                          setLiveInterimZh('');
+                          flushLiveClauseBuffer(tail);
+                        }}
+                        className="px-2 py-1 rounded-lg bg-[#EFECE4] hover:bg-[#F2CA62]/60 border border-[#C48E63] text-[10px] font-black text-[#2D251E]"
+                      >
+                        ⚡ 立即送出這句
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* AI Audio Decoding Spinner */}
+              {isProcessingLiveAudio && (
+                <div className="p-3 rounded-2xl bg-[#1E3158] text-white text-xs font-black flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4 text-[#F2CA62] animate-spin shrink-0" />
+                  <span>
+                    ✨ 正在用 Gemini AI 精準聆聽整段真實錄音、區分說話者並整理「中文大意」...
+                  </span>
+                </div>
+              )}
+
+              {/* Playable Last Audio Clip Bar (for replay / download / AI re-decode!) */}
+              {liveAudioUrl && !isLiveListening && (
+                <div className="p-3 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9] space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-[11px] font-black text-[#2D251E] flex items-center gap-1">
+                      <FileAudio className="w-3.5 h-3.5 text-[#C48E63]" />
+                      <span>🎧 剛剛錄下的原始音檔（可重聽或下載）</span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {liveLastAudioBlobRef.current && (
+                        <button
+                          type="button"
+                          disabled={isProcessingLiveAudio}
+                          onClick={() => {
+                            if (liveLastAudioBlobRef.current) {
+                              void analyzeLiveAudioBlobWithGemini(liveLastAudioBlobRef.current);
+                            }
+                          }}
+                          className="px-2.5 py-1 rounded-xl bg-[#1E3158] text-white text-[10px] font-black inline-flex items-center gap-1 active:scale-95"
+                        >
+                          <Sparkles className="w-3 h-3 text-[#F2CA62]" />
+                          <span>AI 精準重聽此音檔</span>
+                        </button>
+                      )}
+                      <a
+                        href={liveAudioUrl}
+                        download={`bobotalk-live-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.${liveAudioMime.includes('mp4') ? 'm4a' : 'webm'}`}
+                        className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[10px] font-black text-[#2D251E] inline-flex items-center gap-1"
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>下載錄音</span>
+                      </a>
+                    </div>
+                  </div>
+                  <audio controls src={liveAudioUrl} className="w-full h-9" />
                 </div>
               )}
 
@@ -3064,10 +3864,10 @@ export default function App() {
                       if (e.key === 'Enter' && liveManualInput.trim()) {
                         const txt = liveManualInput;
                         setLiveManualInput('');
-                        void appendLiveSegment(txt);
+                        void appendLiveSegment(txt, { sourceEngine: 'manual' });
                       }
                     }}
-                    placeholder={`貼上或輸入聽到的${langCfg.name}廣播／長句...`}
+                    placeholder={`貼上或輸入聽到的${langCfg.name}對話／廣播長句...`}
                     className="flex-1 px-3 py-2 rounded-xl bg-white border border-[#DDD7C9] text-xs text-[#2D251E]"
                   />
                   <button
@@ -3076,7 +3876,7 @@ export default function App() {
                       if (!liveManualInput.trim()) return;
                       const txt = liveManualInput;
                       setLiveManualInput('');
-                      void appendLiveSegment(txt);
+                      void appendLiveSegment(txt, { sourceEngine: 'manual' });
                     }}
                     className="px-3 py-2 rounded-xl bg-[#C48E63] text-white text-xs font-black shrink-0"
                   >
@@ -3092,7 +3892,7 @@ export default function App() {
                     <button
                       key={i}
                       type="button"
-                      onClick={() => void appendLiveSegment(sample)}
+                      onClick={() => void appendLiveSegment(sample, { sourceEngine: 'manual' })}
                       className="px-2.5 py-1 rounded-full bg-[#EFECE4] hover:bg-[#F2CA62]/60 border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] shrink-0"
                     >
                       {sample.slice(0, 24)}...
@@ -3102,88 +3902,369 @@ export default function App() {
               </div>
             </section>
 
+            {/* 🧠 One-Tap Conversation Gist / Summary Card */}
+            {vault.liveSubtitles.length > 0 && (
+              <section className="bg-[#FAF8F3] rounded-3xl border-2 border-[#C48E63] shadow-card p-4 space-y-2.5">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="px-2.5 py-0.5 rounded-full bg-[#F2CA62] border border-[#C48E63] text-[11px] font-black text-[#2D251E] inline-flex items-center gap-1">
+                      <MessageSquareText className="w-3.5 h-3.5" />
+                      <span>
+                        {liveSummary
+                          ? liveSummary.topicLabel
+                          : '🧠 他們在聊什麼？一句話大意'}
+                      </span>
+                    </span>
+                    {liveSummary && (
+                      <span className="text-[10px] font-bold text-[#8A7E70]">
+                        {liveSummary.engine === 'gemini-audio'
+                          ? '✨ AI 真實音檔精準摘要'
+                          : liveSummary.engine === 'gemini-text'
+                          ? '✨ AI 對話整理'
+                          : `🟢 上下文整段重譯（${liveSummary.segmentCount} 段）`}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <label className="inline-flex items-center gap-1 text-[10px] font-bold text-[#5C5044] cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={liveAutoGistEnabled}
+                        onChange={(e) => setLiveAutoGistEnabled(e.target.checked)}
+                        className="accent-[#C48E63]"
+                      />
+                      <span>自動更新</span>
+                    </label>
+                    <button
+                      type="button"
+                      disabled={isSummarizingLive}
+                      onClick={() => void refreshLiveSummary(vault.liveSubtitles, false)}
+                      className="px-2.5 py-1 rounded-xl bg-[#1E3158] hover:bg-[#152442] text-white text-[11px] font-black inline-flex items-center gap-1 active:scale-95 transition"
+                    >
+                      <RefreshCw
+                        className={`w-3 h-3 text-[#F2CA62] ${isSummarizingLive ? 'animate-spin' : ''}`}
+                      />
+                      <span>
+                        {isSummarizingLive ? '彙整中...' : '🔄 彙整整段大意'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {liveSummary ? (
+                  <div className="space-y-2.5">
+                    <div className="p-3 rounded-2xl bg-white border border-[#DDD7C9] space-y-1">
+                      <div className="text-[10px] font-black text-[#C48E63] uppercase">
+                        💡 一句話看懂大意
+                        {liveSummary.toneOrMoodZh ? ` ・ ${liveSummary.toneOrMoodZh}` : ''}
+                      </div>
+                      <p className="text-sm font-black text-[#2D251E] leading-relaxed">
+                        {liveSummary.overallGistZh}
+                      </p>
+                    </div>
+
+                    {liveSummary.bulletPointsZh.length > 0 && (
+                      <ul className="space-y-1 pl-1 text-xs font-bold text-[#5C5044]">
+                        {liveSummary.bulletPointsZh.map((bp, idx) => (
+                          <li key={idx} className="flex items-start gap-1.5">
+                            <span className="text-[#C48E63] shrink-0">•</span>
+                            <span>{bp}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    {liveSummary.keyFacts.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] font-black text-[#C83D33]">
+                          🎯 關鍵數字／重點：
+                        </span>
+                        {liveSummary.keyFacts.map((kf, i) => (
+                          <span
+                            key={i}
+                            className="px-2 py-0.5 rounded-full bg-[#F2CA62]/70 border border-[#C48E63] text-[11px] font-black text-[#2D251E]"
+                          >
+                            {kf}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {liveSummary.mergedFlowZh &&
+                      liveSummary.mergedFlowZh !== liveSummary.overallGistZh && (
+                        <details className="rounded-2xl bg-[#EFECE4] border border-[#DDD7C9] px-3 py-2 text-xs">
+                          <summary className="font-black text-[#5C5044] cursor-pointer">
+                            📄 展開「上下文連貫中文整段大意」
+                          </summary>
+                          <p className="mt-1.5 text-[#2D251E] font-bold whitespace-pre-line leading-relaxed">
+                            {liveSummary.mergedFlowZh}
+                          </p>
+                        </details>
+                      )}
+
+                    {liveSummary.suggestedReply && (
+                      <div className="p-2.5 rounded-2xl bg-[#EFECE4] border border-[#C48E63]/60 flex items-center justify-between gap-2 flex-wrap">
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="text-[10px] font-black text-[#C48E63]">
+                            💬 如果想禮貌接話／回應，可以說：
+                          </div>
+                          <div className="text-xs font-black text-[#2D251E]">
+                            {liveSummary.suggestedReply.foreign}
+                          </div>
+                          <div className="text-[11px] text-[#5C5044]">
+                            （{liveSummary.suggestedReply.zh}）
+                            {liveSummary.suggestedReply.phoneticHint
+                              ? ` • 🗣️ ${liveSummary.suggestedReply.phoneticHint}`
+                              : ''}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            speakTextTTS(
+                              liveSummary.suggestedReply!.foreign,
+                              langCfg.bcp47,
+                              0.9
+                            )
+                          }
+                          className="px-2.5 py-1.5 rounded-xl bg-[#F2CA62] border border-[#C48E63] text-[11px] font-black text-[#2D251E] inline-flex items-center gap-1 shrink-0"
+                        >
+                          <Volume2 className="w-3.5 h-3.5" />
+                          <span>播出來</span>
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const ordered = [...vault.liveSubtitles].sort(
+                            (a, b) => a.createdAt - b.createdAt
+                          );
+                          const copyText = [
+                            `【${liveSummary.topicLabel}】`,
+                            `大意：${liveSummary.overallGistZh}`,
+                            ...liveSummary.bulletPointsZh.map((b) => `- ${b}`),
+                            '',
+                            '--- 逐句對照 ---',
+                            ...ordered.map(
+                              (s) =>
+                                `${s.speakerLabel ? `[${s.speakerLabel}] ` : ''}${s.originalText}\n👉 ${s.translatedZh}`
+                            ),
+                          ].join('\n');
+                          navigator.clipboard?.writeText(copyText);
+                          notify('📋 已複製大意與整段逐字稿！');
+                        }}
+                        className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] inline-flex items-center gap-1"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>複製大意＋逐字稿</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs font-bold text-[#5C5044]">
+                    目前已收錄 {vault.liveSubtitles.length} 段對話。點右上角「<strong>🔄 彙整整段大意</strong>」，系統會把零碎句子合起來連同上下文重新翻譯並抓出重點！
+                  </p>
+                )}
+              </section>
+            )}
+
+            {/* Live Subtitle Timeline Header Bar */}
+            {vault.liveSubtitles.length > 0 && (
+              <div className="flex items-center justify-between gap-2 px-1">
+                <span className="text-xs font-black text-[#5C5044]">
+                  📝 逐句字幕紀錄（共 {vault.liveSubtitles.length} 句）
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLiveSortOrder((prev) =>
+                        prev === 'chronological' ? 'newest-first' : 'chronological'
+                      )
+                    }
+                    className="px-2.5 py-1 rounded-xl bg-[#FAF8F3] border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] inline-flex items-center gap-1"
+                  >
+                    <ArrowDownUp className="w-3 h-3" />
+                    <span>
+                      {liveSortOrder === 'chronological'
+                        ? '⬇️ 對話順序（舊➜新）'
+                        : '⬆️ 最新在上面'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleClearAllLiveSubtitles()}
+                    className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#C83D33] inline-flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>清空本輪</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Live Subtitle Timeline Cards */}
             <section className="space-y-2.5">
               {vault.liveSubtitles.length === 0 ? (
-                <div className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] p-6 text-center text-xs font-bold text-[#8A7E70]">
-                  尚無廣播字幕紀錄，點上方「▶️ 開始連續收音」或點「📢 測試機場／電車廣播」體驗即時雙語字幕！
+                <div className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] p-6 text-center text-xs font-bold text-[#8A7E70] space-y-1">
+                  <div>尚無對話字幕紀錄！</div>
+                  <div>
+                    點上方「🎙️ 開始錄音即時轉中文」即可一邊錄下身邊對話、一邊看即時中文與整段大意，或點「📢 測試機場／電車廣播」先試試看。
+                  </div>
                 </div>
               ) : (
-                vault.liveSubtitles.map((seg) => {
-                  const sCfg = LANGUAGES[seg.lang] || langCfg;
-                  return (
-                    <div
-                      key={seg.id}
-                      className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] p-3.5 shadow-card space-y-2"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-black text-[#5C5044]">
-                          {sCfg.flag} {sCfg.name}即時字幕 •{' '}
-                          {new Date(seg.createdAt).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            second: '2-digit',
-                          })}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              speakTextTTS(seg.originalText, sCfg.bcp47, 0.9)
-                            }
-                            className="px-2 py-1 rounded-lg bg-[#EFECE4] text-[#2D251E] text-[11px] font-bold border border-[#DDD7C9]"
-                          >
-                            🔊 重聽原文
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const now = Date.now();
-                              void commitVaultUpdate((prev) => ({
-                                ...prev,
-                                isUneditedDefault: false,
-                                updatedAt: now,
-                                liveSubtitles: prev.liveSubtitles.filter(
-                                  (x) => x.id !== seg.id
-                                ),
-                                deletedIds: {
-                                  ...prev.deletedIds,
-                                  [seg.id]: now,
-                                },
-                              }));
-                            }}
-                            className="p-1 rounded-lg text-[#8A7E70] hover:text-[#C83D33]"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="text-xs font-semibold text-[#5C5044]">
-                        {seg.originalText}
-                      </div>
-                      <div className="text-base font-black text-[#2D251E]">
-                        {seg.translatedZh}
-                      </div>
-
-                      {seg.highlightKeywords && seg.highlightKeywords.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                          <span className="text-[10px] font-black text-[#C83D33]">
-                            🎯 關鍵資訊：
-                          </span>
-                          {seg.highlightKeywords.map((kw, i) => (
-                            <span
-                              key={i}
-                              className="px-2 py-0.5 rounded-full bg-[#F2CA62] text-[#2D251E] text-[11px] font-black border border-[#C48E63]"
-                            >
-                              {kw}
+                [...vault.liveSubtitles]
+                  .sort((a, b) =>
+                    liveSortOrder === 'chronological'
+                      ? a.createdAt - b.createdAt
+                      : b.createdAt - a.createdAt
+                  )
+                  .map((seg) => {
+                    const sCfg = LANGUAGES[seg.lang] || langCfg;
+                    const isEditing = editingLiveSegId === seg.id;
+                    return (
+                      <div
+                        key={seg.id}
+                        className="bg-[#FAF8F3] rounded-3xl border border-[#DDD7C9] p-3.5 shadow-card space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span className="text-[11px] font-black text-[#5C5044] flex items-center gap-1.5 flex-wrap">
+                            <span>
+                              {sCfg.flag} {seg.speakerLabel || `${sCfg.name}收音字幕`}
                             </span>
-                          ))}
+                            {seg.sourceEngine === 'gemini-audio' && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[9px] font-black">
+                                ✨ AI 音檔聽寫
+                              </span>
+                            )}
+                            <span className="text-[#8A7E70] font-bold">
+                              •{' '}
+                              {new Date(seg.createdAt).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit',
+                              })}
+                            </span>
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingLiveSegId(seg.id);
+                                setEditingLiveSegText(seg.originalText);
+                              }}
+                              className="px-2 py-1 rounded-lg bg-white text-[#5C5044] hover:text-[#2D251E] text-[10px] font-bold border border-[#DDD7C9] inline-flex items-center gap-0.5"
+                              title="聽錯字？點這裡修正原文並重新翻譯"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>修正重翻</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                speakTextTTS(seg.originalText, sCfg.bcp47, 0.9)
+                              }
+                              className="px-2 py-1 rounded-lg bg-[#EFECE4] text-[#2D251E] text-[10px] font-bold border border-[#DDD7C9]"
+                            >
+                              🔊 重聽
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const now = Date.now();
+                                const nextList = vault.liveSubtitles.filter(
+                                  (x) => x.id !== seg.id
+                                );
+                                void commitVaultUpdate((prev) => ({
+                                  ...prev,
+                                  isUneditedDefault: false,
+                                  updatedAt: now,
+                                  liveSubtitles: prev.liveSubtitles.filter(
+                                    (x) => x.id !== seg.id
+                                  ),
+                                  deletedIds: {
+                                    ...prev.deletedIds,
+                                    [seg.id]: now,
+                                  },
+                                }));
+                                if (nextList.length === 0) setLiveSummary(null);
+                              }}
+                              className="p-1 rounded-lg text-[#8A7E70] hover:text-[#C83D33]"
+                              aria-label="刪除此段字幕"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  );
-                })
+
+                        {isEditing ? (
+                          <div className="space-y-1.5">
+                            <input
+                              type="text"
+                              value={editingLiveSegText}
+                              onChange={(e) => setEditingLiveSegText(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  void handleEditLiveSegmentSave(seg.id, editingLiveSegText);
+                                } else if (e.key === 'Escape') {
+                                  setEditingLiveSegId(null);
+                                }
+                              }}
+                              className="w-full px-3 py-1.5 rounded-xl bg-white border border-[#C48E63] text-xs font-bold text-[#2D251E]"
+                              autoFocus
+                            />
+                            <div className="flex items-center gap-1.5 justify-end">
+                              <button
+                                type="button"
+                                onClick={() => setEditingLiveSegId(null)}
+                                className="px-2.5 py-1 rounded-lg bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044]"
+                              >
+                                取消
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void handleEditLiveSegmentSave(seg.id, editingLiveSegText)
+                                }
+                                className="px-2.5 py-1 rounded-lg bg-[#F2CA62] border border-[#C48E63] text-[11px] font-black text-[#2D251E] inline-flex items-center gap-1"
+                              >
+                                <Check className="w-3 h-3" />
+                                <span>儲存並重翻</span>
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="text-xs font-semibold text-[#5C5044]">
+                              {seg.originalText}
+                            </div>
+                            <div className="text-base font-black text-[#2D251E] leading-snug">
+                              {seg.translatedZh}
+                            </div>
+                          </>
+                        )}
+
+                        {seg.highlightKeywords && seg.highlightKeywords.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                            <span className="text-[10px] font-black text-[#C83D33]">
+                              🎯 關鍵資訊：
+                            </span>
+                            {seg.highlightKeywords.map((kw, i) => (
+                              <span
+                                key={i}
+                                className="px-2 py-0.5 rounded-full bg-[#F2CA62] text-[#2D251E] text-[11px] font-black border border-[#C48E63]"
+                              >
+                                {kw}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
               )}
             </section>
           </div>

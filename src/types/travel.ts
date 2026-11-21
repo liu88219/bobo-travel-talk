@@ -65,12 +65,31 @@ export interface DialogueTurn {
 export interface LiveSubtitleSegment {
   id: string;
   lang: LanguageCode;
+  speakerLabel?: string;
   originalText: string;
   translatedZh: string;
   romanization?: string;
   highlightKeywords?: string[];
+  sourceEngine?: 'speech' | 'gemini-audio' | 'manual';
   starred?: boolean;
   createdAt: number;
+  updatedAt: number;
+}
+
+export interface LiveConversationSummary {
+  topicLabel: string;
+  overallGistZh: string;
+  bulletPointsZh: string[];
+  mergedFlowZh: string;
+  toneOrMoodZh?: string;
+  keyFacts: string[];
+  suggestedReply?: {
+    zh: string;
+    foreign: string;
+    phoneticHint?: string;
+  };
+  engine: 'gemini-audio' | 'gemini-text' | 'builtin-context';
+  segmentCount: number;
   updatedAt: number;
 }
 

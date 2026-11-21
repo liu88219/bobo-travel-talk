@@ -29,6 +29,7 @@ import {
   extractMenuUrlsFromSearchMarkdown,
   extractRealMenuDishesFromWebMarkdown,
   annotateHongKongCantoneseMenuZh,
+  detectMixedLanguageTags,
   dedupeSpeechRecognitionChunk,
   shouldFlushSpeechBuffer,
   summarizeLiveConversation,
@@ -335,5 +336,43 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
 
     const keepalive = JSON.stringify({ event: 'keepalive' });
     expect(shouldProcessSseMessage(keepalive, myId).shouldSync).toBe(false);
+  });
+
+  it('detects, glosses without double-wrapping, and breaks down trilingual Cantonese + Mandarin + English code-switching', () => {
+    const tri = detectMixedLanguageTags(
+      '唔該幫我 double check 下個 booking，我剛才已經 confirm 咗，唔好 cancel 呀！'
+    );
+    expect(tri.isMixed).toBe(true);
+    expect(tri.hasCantonese).toBe(true);
+    expect(tri.hasEnglish).toBe(true);
+    expect(tri.badge).toBe('🇭🇰 粵＋🇹🇼 中＋🇺🇸 英 混講');
+
+    const yueEn = detectMixedLanguageTags('頭先個 meeting delay 咗');
+    expect(yueEn.isMixed).toBe(true);
+    expect(yueEn.badge).toBe('🇭🇰 粵＋🇺🇸 英 混講');
+
+    const glossed = annotateHongKongCantoneseMenuZh(
+      '唔該幫我 double check 下個 booking，last order 前 confirm 定 cancel？',
+      '請幫我 double check 下個 booking，last order 前 confirm 定 cancel？'
+    );
+    // Exact inline glosses present
+    expect(glossed).toContain('再次確認(double check)');
+    expect(glossed).toContain('訂位／預約(booking)');
+    expect(glossed).toContain('最後點餐(last order)');
+    expect(glossed).toContain('確認(confirm)');
+    expect(glossed).toContain('取消(cancel)');
+    // MUST NOT double-wrap "check" inside "(double check)" or "order" inside "(last order)"!
+    expect(glossed).not.toContain('檢查(check)');
+    expect(glossed).not.toContain('點餐／訂單(order)');
+
+    const chips = buildLocalWordBreakdowns(
+      '頭先個 meeting 講呢個 project deadline delay 咗，要 double check 下埋單！',
+      'yue'
+    );
+    expect(chips.some((c) => c.term === 'double check')).toBe(true);
+    expect(chips.some((c) => c.term === 'check')).toBe(false);
+    expect(chips.some((c) => c.term === 'meeting')).toBe(true);
+    expect(chips.some((c) => c.term.includes('埋單'))).toBe(true);
+    expect(chips.some((c) => c.term === '頭先')).toBe(true);
   });
 });

@@ -112,6 +112,26 @@ import {
 
 type ActiveTab = 'talk' | 'live' | 'menu' | 'phrasebook' | 'calc';
 
+const APP_BUILD_VERSION = 'v2.6';
+
+function detectStandalonePwa(): boolean {
+  if (typeof window === 'undefined') return false;
+  const nav = navigator as Navigator & { standalone?: boolean };
+  return Boolean(
+    nav.standalone ||
+      window.matchMedia?.('(display-mode: standalone)')?.matches
+  );
+}
+
+function detectIosWebKit(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return (
+    /iPad|iPhone|iPod/i.test(ua) ||
+    (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1)
+  );
+}
+
 interface MenuCropRegion {
   id: string;
   label: string;
@@ -194,6 +214,14 @@ export default function App() {
   const [editingLiveSegId, setEditingLiveSegId] = useState<string | null>(null);
   const [editingLiveSegText, setEditingLiveSegText] = useState('');
   const [liveAutoGistEnabled, setLiveAutoGistEnabled] = useState(true);
+  const [liveSpeechError, setLiveSpeechError] = useState<string>('');
+  const [liveAudioRecordingEnabled, setLiveAudioRecordingEnabled] = useState<boolean>(
+    () => !detectIosWebKit()
+  );
+  const [hasNewAppUpdate, setHasNewAppUpdate] = useState(false);
+  const isStandalonePwa = useMemo(() => detectStandalonePwa(), []);
+  const liveHeardAnySpeechRef = useRef(false);
+  const liveSessionIdRef = useRef(0);
 
   // Tab 3: Menu Photo & Point-to-Order Card state
   const [activeMenuId, setActiveMenuId] = useState<string>('');
@@ -331,12 +359,44 @@ export default function App() {
     []
   );
 
-  // Startup hydration from IndexedDB & Cloud
+  const checkForNewAppVersion = useCallback(async () => {
+    try {
+      if (typeof window === 'undefined' || window.location.protocol === 'file:') return;
+      const curScript = document.querySelector<HTMLScriptElement>(
+        'script[type="module"][src*="assets/index-"]'
+      );
+      const curSrc = curScript?.getAttribute('src') || '';
+      const curMatch = curSrc.match(/index-[A-Za-z0-9_-]+\.js/);
+      if (!curMatch) return;
+      const res = await fetch(`./index.html?t=${Date.now()}`, {
+        cache: 'no-store',
+      });
+      if (!res.ok) return;
+      const html = await res.text();
+      const latestMatch = html.match(/index-[A-Za-z0-9_-]+\.js/);
+      if (latestMatch && latestMatch[0] !== curMatch[0]) {
+        setHasNewAppUpdate(true);
+      }
+    } catch {
+      // Ignore offline version check errors
+    }
+  }, []);
+
+  const forceHardRefreshApp = useCallback(() => {
+    try {
+      const base = `${window.location.origin}${window.location.pathname}`;
+      window.location.replace(`${base}?_v=${Date.now()}`);
+    } catch {
+      window.location.reload();
+    }
+  }, []);
+
+  // Startup hydration from IndexedDB & Cloud (+ one-tap #sync= hash alignment!)
   useEffect(() => {
     let mounted = true;
     (async () => {
       await requestPersistentStorage();
-      const [hydratedState, savedPass] = await Promise.all([
+      const [hydratedState, storedPass] = await Promise.all([
         loadLocalVaultState(),
         loadRememberedPasscode(),
       ]);
@@ -344,31 +404,56 @@ export default function App() {
       vaultRef.current = hydratedState;
       setVault(hydratedState);
 
-      if (savedPass) {
-        passcodeRef.current = savedPass;
-        setPasscode(savedPass);
-        setPasscodeInput(savedPass);
+      // Support #sync=<passcode> one-tap URL alignment between Safari & Home Screen App
+      let hashPass = '';
+      try {
+        const rawHash = window.location.hash || '';
+        const m = rawHash.match(/sync=([^&]+)/i);
+        if (m && m[1]) {
+          hashPass = normalizePasscode(decodeURIComponent(m[1]));
+          window.history.replaceState(
+            null,
+            '',
+            `${window.location.pathname}${window.location.search}`
+          );
+        }
+      } catch {
+        // Ignore hash parse error
+      }
+
+      const effectiveInitPass = hashPass || storedPass;
+      if (effectiveInitPass) {
+        if (hashPass && hashPass !== storedPass) {
+          await saveRememberedPasscode(hashPass);
+        }
+        passcodeRef.current = effectiveInitPass;
+        setPasscode(effectiveInitPass);
+        setPasscodeInput(effectiveInitPass);
         setSyncStatus('syncing');
         const { merged, synced, matchedPasscode } = await syncVaultWithCloud(
           hydratedState,
-          savedPass
+          effectiveInitPass
         );
         if (!mounted) return;
         vaultRef.current = merged;
         setVault(merged);
-        if (matchedPasscode && matchedPasscode !== savedPass) {
+        if (matchedPasscode && matchedPasscode !== effectiveInitPass) {
           passcodeRef.current = matchedPasscode;
           setPasscode(matchedPasscode);
           setPasscodeInput(matchedPasscode);
           await saveRememberedPasscode(matchedPasscode);
         }
         setSyncStatus(synced ? 'synced' : 'pending');
+        if (hashPass && synced) {
+          notify('☁️ 已透過專屬連結自動對齊雲端保險箱！');
+        }
       }
+      void checkForNewAppVersion();
     })();
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [checkForNewAppVersion, notify]);
 
   // Auto sync on window focus / visibilitychange / online recovery
   const handleManualOrAutoSync = useCallback(
@@ -408,8 +493,11 @@ export default function App() {
 
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === 'visible' && passcodeRef.current) {
-        void handleManualOrAutoSync(false);
+      if (document.visibilityState === 'visible') {
+        void checkForNewAppVersion();
+        if (passcodeRef.current) {
+          void handleManualOrAutoSync(false);
+        }
       }
     };
     const onFocus = () => {
@@ -430,7 +518,7 @@ export default function App() {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('online', onOnline);
     };
-  }, [handleManualOrAutoSync]);
+  }, [checkForNewAppVersion, handleManualOrAutoSync]);
 
   // Real-time SSE listener
   useEffect(() => {
@@ -1213,6 +1301,22 @@ export default function App() {
     [commitVaultUpdate, liveAutoGistEnabled, notify, refreshLiveSummary]
   );
 
+  const handleDeleteLiveAudioClip = useCallback(() => {
+    setLiveAudioUrl((prevUrl) => {
+      if (prevUrl) {
+        try {
+          URL.revokeObjectURL(prevUrl);
+        } catch {
+          // ignore
+        }
+      }
+      return '';
+    });
+    liveLastAudioBlobRef.current = null;
+    setLiveSpeechError('');
+    notify('🗑️ 已刪除這段原始錄音檔！');
+  }, [notify]);
+
   const handleClearAllLiveSubtitles = useCallback(async () => {
     if (vaultRef.current.liveSubtitles.length === 0) return;
     const now = Date.now();
@@ -1282,8 +1386,12 @@ export default function App() {
             }
           }
           setTimeout(() => {
-            if (vaultRef.current.liveSubtitles.length > 0) {
+            if (vaultRef.current.liveSubtitles.length > 0 && liveHeardAnySpeechRef.current) {
               void refreshLiveSummary(vaultRef.current.liveSubtitles, false);
+            } else if (!liveHeardAnySpeechRef.current) {
+              setLiveSpeechError(
+                '剛剛這段錄音沒有收到瀏覽器語音辨識文字（常見原因：廣東話／影片雜音、音量太小，或這支音檔需透過 AI 解讀）。你可以點下方「🗑️ 刪除錄音」，或到右上角 ⚙️ 綁定免費 Gemini API Key 後點「✨ AI 精準重聽此音檔」轉成中文！'
+              );
             }
           }, 700);
         };
@@ -1295,8 +1403,12 @@ export default function App() {
       } else {
         cleanupLiveAudioResources();
         setTimeout(() => {
-          if (vaultRef.current.liveSubtitles.length > 0) {
+          if (vaultRef.current.liveSubtitles.length > 0 && liveHeardAnySpeechRef.current) {
             void refreshLiveSummary(vaultRef.current.liveSubtitles, false);
+          } else if (!liveHeardAnySpeechRef.current) {
+            setLiveSpeechError(
+              '剛剛沒有辨識到清楚的語音句子，請確認手機麥克風權限已開啟，並稍微靠近說話者／喇叭再試一次！'
+            );
           }
         }, 700);
       }
@@ -1310,11 +1422,14 @@ export default function App() {
       typeof MediaRecorder !== 'undefined';
 
     if (!SpeechCtor && !hasMediaRecorder) {
-      notify('此裝置瀏覽器不支援麥克風收音，您可點選「📁 匯入錄音檔」或手動貼上聽寫！');
+      notify('此裝置瀏覽器不支援麥克風收音，您可點選「📁 匯入音檔」或手動貼上聽寫！');
       return;
     }
 
+    const sessionId = ++liveSessionIdRef.current;
     isLiveListeningRef.current = true;
+    liveHeardAnySpeechRef.current = false;
+    setLiveSpeechError('');
     setIsLiveListening(true);
     setLiveElapsedSec(0);
     liveClauseBufferRef.current = '';
@@ -1328,82 +1443,26 @@ export default function App() {
       setLiveElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
     }, 500);
 
-    // 1. Start real MediaRecorder audio capture + live microphone level meter (works even without SpeechRecognition!)
-    if (hasMediaRecorder) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            autoGainControl: livePickupMode === 'ambient',
-            noiseSuppression: true,
-            echoCancellation: livePickupMode === 'closeup',
-          },
-        });
-        if (!isLiveListeningRef.current) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        liveAudioStreamRef.current = stream;
-        liveAudioChunksRef.current = [];
-        const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-          ? 'audio/webm;codecs=opus'
-          : MediaRecorder.isTypeSupported('audio/mp4')
-          ? 'audio/mp4'
-          : '';
-        const recorder = preferredMime
-          ? new MediaRecorder(stream, { mimeType: preferredMime })
-          : new MediaRecorder(stream);
-        recorder.ondataavailable = (ev) => {
-          if (ev.data && ev.data.size > 0) {
-            liveAudioChunksRef.current.push(ev.data);
-          }
-        };
-        liveAudioRecRef.current = recorder;
-        recorder.start(1000);
+    const hasGeminiKey =
+      (vaultRef.current.profile.geminiApiKey || '').trim().length > 10;
+    const isIos = detectIosWebKit();
+    let triedYueFallback = false;
 
-        // Live audio volume meter so user knows whether mic is clearly hearing the people nearby
-        const AudioCtxCtor =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext?: typeof AudioContext })
-            .webkitAudioContext;
-        if (AudioCtxCtor) {
-          const ctx = new AudioCtxCtor();
-          liveAudioCtxRef.current = ctx;
-          const src = ctx.createMediaStreamSource(stream);
-          const analyser = ctx.createAnalyser();
-          analyser.fftSize = 256;
-          src.connect(analyser);
-          const dataArr = new Uint8Array(analyser.frequencyBinCount);
-          const tick = () => {
-            if (!isLiveListeningRef.current) return;
-            analyser.getByteTimeDomainData(dataArr);
-            let sumSq = 0;
-            for (let i = 0; i < dataArr.length; i++) {
-              const v = (dataArr[i] - 128) / 128;
-              sumSq += v * v;
-            }
-            const rms = Math.sqrt(sumSq / dataArr.length);
-            setLiveMicLevel(Math.min(100, Math.round(rms * 380)));
-            liveMeterRafRef.current = requestAnimationFrame(tick);
-          };
-          tick();
-        }
-      } catch {
-        // MediaRecorder optional if mic already held by SpeechRecognition on older iOS Safari
-      }
-    }
-
-    // 2. Start smart-buffered Web Speech Recognition (with chunk coalescing, dedupe, and live Chinese preview)
-    const spawnSpeechRec = () => {
-      if (!SpeechCtor || !isLiveListeningRef.current) return;
+    // 1. CRITICAL FIX: Start Web Speech Recognition SYNCHRONOUSLY FIRST inside the click gesture!
+    // Putting `await getUserMedia()` before `rec.start()` breaks iPhone Safari/PWA user gesture
+    // and steals the exclusive hardware audio session, leaving an empty recording with zero Chinese text!
+    const spawnSpeechRec = (langOverride?: string) => {
+      if (!SpeechCtor || !isLiveListeningRef.current || liveSessionIdRef.current !== sessionId) return;
       try {
         const currentCfg = LANGUAGES[vaultRef.current.profile.activeLang] || langCfg;
         const rec = new SpeechCtor();
-        rec.lang = currentCfg.bcp47;
+        rec.lang = langOverride || currentCfg.bcp47;
         rec.continuous = true;
         rec.interimResults = true;
         let lastFinalIdx = -1;
 
         rec.onresult = (event: unknown) => {
+          if (liveSessionIdRef.current !== sessionId) return;
           const e = event as {
             results?: ArrayLike<{
               isFinal?: boolean;
@@ -1417,10 +1476,11 @@ export default function App() {
             const txt = (item[0]?.transcript || '').trim();
             const conf = item[0]?.confidence;
             if (!txt) continue;
+            liveHeardAnySpeechRef.current = true;
+            setLiveSpeechError('');
             if (item.isFinal) {
               if (i > lastFinalIdx) {
                 lastFinalIdx = i;
-                // Skip tiny extremely-low-confidence background hallucinations
                 if (typeof conf === 'number' && conf > 0 && conf < 0.22 && txt.length < 4) {
                   continue;
                 }
@@ -1444,7 +1504,6 @@ export default function App() {
                     if (liveFlushTimerRef.current) {
                       clearTimeout(liveFlushTimerRef.current);
                     }
-                    // Wait 2.6s of real silence to coalesce rapid 2-word fragments (e.g. Cantonese video speech) into complete sentences!
                     liveFlushTimerRef.current = setTimeout(() => {
                       flushLiveClauseBuffer();
                     }, 2600);
@@ -1465,44 +1524,46 @@ export default function App() {
 
         rec.onerror = (ev: unknown) => {
           const errCode = (ev as { error?: string })?.error;
+          if (!errCode || errCode === 'no-speech' || errCode === 'aborted') return;
           if (errCode === 'not-allowed' || errCode === 'service-not-allowed') {
             isLiveListeningRef.current = false;
             setIsLiveListening(false);
             cleanupLiveAudioResources();
+            setLiveSpeechError(
+              '⚠️ 無法啟用即時語音轉中文：請檢查瀏覽器／iPhone 設定中的「麥克風權限」與「聽寫 (Dictation)」是否已開啟。'
+            );
             notify('⚠️ 請允許瀏覽器麥克風權限才能進行收音字幕！');
           } else if (
-            errCode === 'audio-capture' &&
-            liveAudioStreamRef.current &&
-            (vaultRef.current.profile.geminiApiKey || '').trim().length <= 10
+            errCode === 'language-not-supported' &&
+            vaultRef.current.profile.activeLang === 'yue' &&
+            !triedYueFallback
           ) {
-            // On iOS Safari, Web Speech API and MediaRecorder may compete for the single mic session.
-            // Without an AI key, release MediaRecorder so live SpeechRecognition takes priority!
-            try {
-              liveAudioRecRef.current?.stop();
-            } catch {
-              // ignore
-            }
-            liveAudioRecRef.current = null;
-            liveAudioStreamRef.current.getTracks().forEach((t) => t.stop());
-            liveAudioStreamRef.current = null;
-            if (liveMeterRafRef.current !== null) {
-              cancelAnimationFrame(liveMeterRafRef.current);
-              liveMeterRafRef.current = null;
-            }
-            if (liveAudioCtxRef.current) {
+            triedYueFallback = true;
+            setTimeout(() => spawnSpeechRec('yue-Hant-HK'), 150);
+          } else if (errCode === 'audio-capture') {
+            if (liveAudioStreamRef.current && !hasGeminiKey) {
               try {
-                void liveAudioCtxRef.current.close();
+                liveAudioRecRef.current?.stop();
               } catch {
                 // ignore
               }
-              liveAudioCtxRef.current = null;
+              liveAudioRecRef.current = null;
+              liveAudioStreamRef.current.getTracks().forEach((t) => t.stop());
+              liveAudioStreamRef.current = null;
+            } else {
+              setLiveSpeechError(
+                '⚠️ 麥克風收音被佔用中（若有其他 App 或錄音器正在使用麥克風請先關閉）。'
+              );
             }
+          } else if (errCode === 'network') {
+            setLiveSpeechError(
+              '⚠️ 瀏覽器即時語音辨識需要連網（請確認網路暢通後再試）。'
+            );
           }
         };
 
         rec.onend = () => {
-          // Fold any short unfinished interim speech into the buffer across WebKit/Chrome restarts
-          // so fast Cantonese/Japanese audio does NOT get cut into 2-character fragments!
+          if (liveSessionIdRef.current !== sessionId) return;
           const leftover = liveInterimTextRef.current.trim();
           if (leftover) {
             liveInterimTextRef.current = '';
@@ -1513,6 +1574,7 @@ export default function App() {
               leftover
             );
             if (dedupedLeftover) {
+              liveHeardAnySpeechRef.current = true;
               const joinSep =
                 targetCode === 'ja' || targetCode === 'yue' ? '' : ' ';
               liveClauseBufferRef.current = liveClauseBufferRef.current
@@ -1533,22 +1595,95 @@ export default function App() {
           }
           if (isLiveListeningRef.current) {
             liveRestartTimerRef.current = setTimeout(() => {
-              if (isLiveListeningRef.current) {
-                spawnSpeechRec();
+              if (isLiveListeningRef.current && liveSessionIdRef.current === sessionId) {
+                spawnSpeechRec(triedYueFallback ? 'yue-Hant-HK' : undefined);
               }
-            }, 120);
+            }, 140);
           }
         };
 
         liveRecRef.current = rec;
         rec.start();
-      } catch {
-        // MediaRecorder audio recording still runs as backup!
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '';
+        if (!hasGeminiKey) {
+          setLiveSpeechError(
+            `⚠️ 即時語音轉字啟動失敗${msg ? `（${msg}）` : ''}。建議在 Safari 分頁開啟或使用 ⚙️ 綁定免費 Gemini Key 錄音轉譯。`
+          );
+        }
       }
     };
 
-    if (SpeechCtor) {
+    // On iOS with NO Gemini key, NEVER open MediaRecorder at the same time — it steals the mic from SpeechRecognition!
+    const shouldStartAudioRec =
+      hasMediaRecorder &&
+      (!SpeechCtor || hasGeminiKey || (liveAudioRecordingEnabled && !isIos));
+
+    if (SpeechCtor && !(isIos && hasGeminiKey && liveAudioRecordingEnabled)) {
       spawnSpeechRec();
+    }
+
+    // 2. Optionally capture real audio stream with MediaRecorder AFTER SpeechRecognition starts
+    if (shouldStartAudioRec) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            autoGainControl: livePickupMode === 'ambient',
+            noiseSuppression: true,
+            echoCancellation: livePickupMode === 'closeup',
+          },
+        });
+        if (!isLiveListeningRef.current || liveSessionIdRef.current !== sessionId) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        liveAudioStreamRef.current = stream;
+        liveAudioChunksRef.current = [];
+        const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : MediaRecorder.isTypeSupported('audio/mp4')
+          ? 'audio/mp4'
+          : '';
+        const recorder = preferredMime
+          ? new MediaRecorder(stream, { mimeType: preferredMime })
+          : new MediaRecorder(stream);
+        recorder.ondataavailable = (ev) => {
+          if (ev.data && ev.data.size > 0) {
+            liveAudioChunksRef.current.push(ev.data);
+          }
+        };
+        liveAudioRecRef.current = recorder;
+        recorder.start(1000);
+
+        const AudioCtxCtor =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext?: typeof AudioContext })
+            .webkitAudioContext;
+        if (AudioCtxCtor) {
+          const ctx = new AudioCtxCtor();
+          liveAudioCtxRef.current = ctx;
+          const src = ctx.createMediaStreamSource(stream);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 256;
+          src.connect(analyser);
+          const dataArr = new Uint8Array(analyser.frequencyBinCount);
+          const tick = () => {
+            if (!isLiveListeningRef.current || liveSessionIdRef.current !== sessionId) return;
+            analyser.getByteTimeDomainData(dataArr);
+            let sumSq = 0;
+            for (let i = 0; i < dataArr.length; i++) {
+              const v = (dataArr[i] - 128) / 128;
+              sumSq += v * v;
+            }
+            const rms = Math.sqrt(sumSq / dataArr.length);
+            setLiveMicLevel(Math.min(100, Math.round(rms * 380)));
+            liveMeterRafRef.current = requestAnimationFrame(tick);
+          };
+          tick();
+        }
+      } catch {
+        // Optional backup recorder failed; live SpeechRecognition still works!
+      }
     }
 
     notify(
@@ -1561,6 +1696,7 @@ export default function App() {
     cleanupLiveAudioResources,
     flushLiveClauseBuffer,
     langCfg,
+    liveAudioRecordingEnabled,
     livePickupMode,
     notify,
     refreshLiveSummary,
@@ -3014,6 +3150,20 @@ export default function App() {
         </div>
       )}
 
+      {/* New Version Banner for iPhone Standalone PWA (no browser address bar!) */}
+      {hasNewAppUpdate && (
+        <div className="bg-[#1E3158] text-white px-3.5 py-2 text-xs font-black flex items-center justify-between gap-2">
+          <span>🆕 偵測到新版 BoboTalk！點右側按鈕立即對齊最新版</span>
+          <button
+            type="button"
+            onClick={forceHardRefreshApp}
+            className="px-2.5 py-1 rounded-xl bg-[#F2CA62] text-[#2D251E] text-[11px] font-black shrink-0 border border-[#C48E63] active:scale-95"
+          >
+            🔄 立即更新
+          </button>
+        </div>
+      )}
+
       {/* Top Sticky Header */}
       <header className="sticky top-0 z-30 bg-[#ECE8DF]/95 backdrop-blur-md border-b border-[#DDD7C9] px-3.5 py-2.5">
         <div className="max-w-2xl mx-auto flex items-center justify-between gap-2">
@@ -3033,18 +3183,26 @@ export default function App() {
                   </span>
                 ) : (
                   <span className="px-2 py-0.5 rounded-full bg-[#EFECE4] border border-[#DDD7C9] text-[#5C5044] text-[10px] font-bold shrink-0">
-                    🟢 免Key即用
+                    {APP_BUILD_VERSION}
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-1.5 text-[11px] text-[#5C5044]">
+              <div className="flex items-center gap-1.5 text-[11px] text-[#5C5044] flex-wrap">
                 <span className="truncate">
                   {langCfg.flag} {langCfg.countryName}（{langCfg.name}）
                 </span>
-                {fingerprintBadge && (
-                  <span className="px-1.5 py-0.2 rounded-full bg-[#FAF8F3] border border-[#DDD7C9] text-[10px] font-bold text-[#2D251E]">
+                {fingerprintBadge ? (
+                  <span className="px-1.5 rounded-full bg-[#FAF8F3] border border-[#DDD7C9] text-[10px] font-bold text-[#2D251E]">
                     {fingerprintBadge}
                   </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void openSettingsAndLoadSnapshots()}
+                    className="px-1.5 rounded-full bg-amber-100 border border-amber-300 text-[10px] font-black text-amber-900"
+                  >
+                    僅本機・點此同步
+                  </button>
                 )}
               </div>
             </div>
@@ -3055,15 +3213,29 @@ export default function App() {
             <button
               type="button"
               onClick={() => void handleManualOrAutoSync(true)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-[#FAF8F3] hover:bg-[#EFECE4] border border-[#DDD7C9] text-xs font-bold text-[#2D251E] shadow-sm active:scale-95 transition"
+              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border text-[11px] font-black shadow-sm active:scale-95 transition ${
+                syncStatus === 'synced'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                  : syncStatus === 'pending'
+                  ? 'bg-amber-50 border-amber-300 text-amber-900'
+                  : 'bg-[#FAF8F3] hover:bg-[#EFECE4] border-[#DDD7C9] text-[#2D251E]'
+              }`}
               title="跨瀏覽器／主畫面 App 雲端同步"
             >
               <RefreshCw
                 className={`w-3.5 h-3.5 ${
-                  syncStatus === 'syncing' ? 'animate-spin text-[#C48E63]' : 'text-[#2D251E]'
+                  syncStatus === 'syncing' ? 'animate-spin text-[#C48E63]' : ''
                 }`}
               />
-              <span className="hidden sm:inline">🔄 雲端同步</span>
+              <span>
+                {syncStatus === 'syncing'
+                  ? '同步中'
+                  : syncStatus === 'synced'
+                  ? '已同步'
+                  : syncStatus === 'pending'
+                  ? '待同步'
+                  : '同步'}
+              </span>
               <span
                 className={`w-2 h-2 rounded-full ${
                   syncStatus === 'synced'
@@ -3944,11 +4116,13 @@ export default function App() {
                       {String(liveElapsedSec % 60).padStart(2, '0')} ・ 即時收音中
                     </span>
                     <span className="text-[#5C5044]">
-                      {liveMicLevel >= 18
+                      {liveInterimText || liveBufferPreview
+                        ? '🟢 辨識中・已收到語音'
+                        : liveMicLevel >= 18
                         ? '🟢 收音音量清晰'
                         : liveMicLevel >= 6
                         ? '🟡 稍微靠近一點更清楚'
-                        : '⚪ 等待說話聲...'}
+                        : '🎙️ 專心聆聽中...'}
                     </span>
                   </div>
                   {/* Live Microphone Level Bar */}
@@ -4003,28 +4177,67 @@ export default function App() {
                 </div>
               )}
 
-              {/* Playable Last Audio Clip Bar (for replay / download / AI re-decode!) */}
+              {/* Optional keep audio clip toggle (disabled on iOS without Gemini key so mic isn't stolen!) */}
+              <div className="flex items-center justify-between gap-2 px-1 text-[11px] text-[#5C5044]">
+                <label className="inline-flex items-center gap-1.5 font-bold cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    disabled={isLiveListening}
+                    checked={liveAudioRecordingEnabled}
+                    onChange={(e) => setLiveAudioRecordingEnabled(e.target.checked)}
+                    className="accent-[#C48E63]"
+                  />
+                  <span>
+                    🎙️ 同步保留原始錄音檔（可重聽／下載）
+                    {detectIosWebKit() && !(vault.profile.geminiApiKey || '').trim()
+                      ? ' — iPhone 免Key建議關閉以免搶麥克風'
+                      : ''}
+                  </span>
+                </label>
+              </div>
+
+              {/* Explicit Speech/Audio Error Alert Banner (never silently swallow errors!) */}
+              {liveSpeechError && !isLiveListening && (
+                <div className="p-3 rounded-2xl bg-amber-50 border border-amber-300 text-xs font-bold text-amber-900 flex items-start justify-between gap-2">
+                  <span className="leading-relaxed">{liveSpeechError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setLiveSpeechError('')}
+                    className="text-amber-700 hover:text-amber-900 shrink-0 p-0.5"
+                    aria-label="關閉提示"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* Playable Last Audio Clip Bar (for replay / download / AI re-decode / delete!) */}
               {liveAudioUrl && !isLiveListening && (
                 <div className="p-3 rounded-2xl bg-[#EFECE4] border border-[#DDD7C9] space-y-2">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <span className="text-[11px] font-black text-[#2D251E] flex items-center gap-1">
                       <FileAudio className="w-3.5 h-3.5 text-[#C48E63]" />
-                      <span>🎧 剛剛錄下的原始音檔（可重聽或下載）</span>
+                      <span>🎧 剛剛錄下的原始音檔</span>
                     </span>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       {liveLastAudioBlobRef.current && (
                         <button
                           type="button"
                           disabled={isProcessingLiveAudio}
                           onClick={() => {
                             if (liveLastAudioBlobRef.current) {
+                              if ((vault.profile.geminiApiKey || '').trim().length <= 10) {
+                                void openSettingsAndLoadSnapshots();
+                                notify('請先在此填入免費 Gemini API Key，即可直接把整段錄音轉成中文＋大意！');
+                                return;
+                              }
                               void analyzeLiveAudioBlobWithGemini(liveLastAudioBlobRef.current);
                             }
                           }}
                           className="px-2.5 py-1 rounded-xl bg-[#1E3158] text-white text-[10px] font-black inline-flex items-center gap-1 active:scale-95"
                         >
                           <Sparkles className="w-3 h-3 text-[#F2CA62]" />
-                          <span>AI 精準重聽此音檔</span>
+                          <span>✨ AI 轉中文＋大意</span>
                         </button>
                       )}
                       <a
@@ -4033,11 +4246,25 @@ export default function App() {
                         className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[10px] font-black text-[#2D251E] inline-flex items-center gap-1"
                       >
                         <Download className="w-3 h-3" />
-                        <span>下載錄音</span>
+                        <span>下載</span>
                       </a>
+                      <button
+                        type="button"
+                        onClick={handleDeleteLiveAudioClip}
+                        className="px-2.5 py-1 rounded-xl bg-white hover:bg-[#C83D33]/10 border border-[#C83D33]/40 text-[10px] font-black text-[#C83D33] inline-flex items-center gap-1 active:scale-95"
+                        title="刪除此段錄音"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>刪除</span>
+                      </button>
                     </div>
                   </div>
                   <audio controls src={liveAudioUrl} className="w-full h-9" />
+                  {!(vault.profile.geminiApiKey || '').trim() && (
+                    <div className="text-[11px] font-bold text-[#5C5044] bg-white/80 rounded-xl px-2.5 py-1.5 border border-[#DDD7C9] leading-relaxed">
+                      💡 <strong>為什麼只看到錄音檔還沒轉成中文？</strong> 免費瀏覽器無法直接對「已錄完的音檔／分頁影片檔」解碼轉文字；若要<strong>把這段錄音直接轉成逐句中文＋一句話大意</strong>，請點上方 <strong>「✨ AI 轉中文＋大意」</strong> 綁定免費 Gemini API Key！（如果不需要這段音檔，直接點 <strong>「🗑️ 刪除」</strong> 即可清掉）
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -7111,6 +7338,49 @@ export default function App() {
                   >
                     綁定並同步
                   </button>
+                </div>
+
+                {/* Environment Version + One-Tap Alignment & Hard Refresh (Essential for iPhone Standalone PWA!) */}
+                <div className="pt-2 border-t border-[#EFECE4] space-y-2">
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-[#5C5044] flex-wrap">
+                    <span>
+                      目前模式：
+                      <strong className="text-[#2D251E]">
+                        {isStandalonePwa ? '📱 iPhone 主畫面 App' : '🌐 瀏覽器分頁'}
+                      </strong>{' '}
+                      （版本 <code>{APP_BUILD_VERSION}</code>）
+                    </span>
+                    <span className="text-[10px] text-[#8A7E70]">
+                      {passcode ? '✅ 已綁定自動同步' : '⚠️ 尚未綁定（Safari 與主畫面各自隔離）'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={forceHardRefreshApp}
+                      className="px-2.5 py-1.5 rounded-xl bg-[#EFECE4] hover:bg-[#F2CA62]/50 border border-[#DDD7C9] text-[11px] font-black text-[#2D251E] inline-flex items-center gap-1"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>🆕 強制重整 App 到最新版</span>
+                    </button>
+                    {passcode && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const base = `${window.location.origin}${window.location.pathname}`;
+                          const syncUrl = `${base}#sync=${encodeURIComponent(passcode)}`;
+                          navigator.clipboard?.writeText(syncUrl);
+                          notify(
+                            '📲 已複製專屬同步連結！到另一邊瀏覽器貼上打開即可免打字自動對齊（內含您的通行碼，請勿公開分享）。'
+                          );
+                        }}
+                        className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-[#EFECE4] border border-[#C48E63] text-[11px] font-black text-[#1E3158] inline-flex items-center gap-1"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>📲 複製一鍵對齊連結</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 

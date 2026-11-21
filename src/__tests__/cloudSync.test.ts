@@ -31,6 +31,8 @@ import {
   annotateHongKongCantoneseMenuZh,
   detectMixedLanguageTags,
   dedupeSpeechRecognitionChunk,
+  stitchSpeechFragment,
+  cleanOverlapSegmentsForGist,
   shouldFlushSpeechBuffer,
   summarizeLiveConversation,
 } from '../services/translatorEngine';
@@ -415,5 +417,28 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     expect(res.overallGistZh.length).toBeGreaterThan(5);
     expect(res.overallGistZh).not.toContain('翻譯中');
     expect(res.bulletPointsZh.every((b) => !b.includes('翻譯中'))).toBe(true);
+  });
+
+  it('stiches back-and-forth fragments gently with pause punctuation and filters echoed overlap fillers for gist', () => {
+    // Drops pure filler echoed interjection without deleting main speech
+    expect(stitchSpeechFragment('我哋聽日去旺角食飯', '嗯嗯嗯', 'yue')).toBe(
+      '我哋聽日去旺角食飯'
+    );
+    // Inserts comma pause between back-to-back clauses instead of mashing them together
+    expect(stitchSpeechFragment('我哋聽日去旺角', '七點鐘見面', 'yue')).toBe(
+      '我哋聽日去旺角，七點鐘見面'
+    );
+    // Preserves space between adjacent English words in mixed speech
+    expect(stitchSpeechFragment('double', 'check', 'yue')).toBe('double check');
+
+    // Cleans consecutive duplicates & pure filler bursts for clean gist generation
+    const cleaned = cleanOverlapSegmentsForGist([
+      '聽日七點旺角見',
+      '聽日七點旺角見',
+      '嗯嗯',
+      '係係',
+      '我已經訂好枱喇',
+    ]);
+    expect(cleaned).toEqual(['聽日七點旺角見', '我已經訂好枱喇']);
   });
 });

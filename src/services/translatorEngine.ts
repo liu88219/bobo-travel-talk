@@ -1079,6 +1079,60 @@ export function dedupeSpeechRecognitionChunk(
 }
 
 /**
+ * 過濾多人「短暫重疊插話／回音重複」造成的純雜訊與連音卡詞，並用自然頓號串接相鄰片段。
+ * 絕不丟掉有意義的實詞！
+ */
+export function stitchSpeechFragment(
+  prev: string,
+  next: string,
+  lang: LanguageCode
+): string {
+  const a = prev.trim();
+  const b = next.trim();
+  if (!a) return b;
+  if (!b) return a;
+  // Strip pure single-character consecutive stutters (e.g. "嗯嗯嗯" / "啊啊")
+  const isPureFiller = /^(?:嗯+|哦+|喔+|啊+|唉+|呃+|吓+|係係係+|um+|uh+|ah+|er+|hmm+)$/i.test(b);
+  if (isPureFiller && a.length >= 6) return a;
+  const deduped = dedupeSpeechRecognitionChunk(a, b);
+  if (!deduped) return a;
+  if (lang === 'ja' || lang === 'yue') {
+    const endsPunct = /[，。！？、,.\-!?]$/.test(a);
+    const latinBoundary = /[A-Za-z0-9]$/.test(a) && /^[A-Za-z0-9]/.test(deduped);
+    if (endsPunct) return `${a}${deduped}`.trim();
+    if (latinBoundary) return `${a} ${deduped}`.replace(/\s{2,}/g, ' ').trim();
+    // If previous fragment is already a full clause (>= 6 CJK chars), separate gently with pause `、`
+    // so brief back-and-forth overlap doesn't mash two people's clauses into nonsense!
+    const sep = a.length >= 6 && deduped.length >= 4 ? '，' : '';
+    return `${a}${sep}${deduped}`.trim();
+  }
+  return `${a} ${deduped}`.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 整理連續紀錄中的重複回音或純語氣詞片段，供「大意優先」摘要乾淨理解（不改動已保存的原字卡片）。
+ */
+export function cleanOverlapSegmentsForGist(texts: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of texts) {
+    const t = raw.trim();
+    if (!t) continue;
+    // Skip pure filler echoes only if there are other meaningful fragments
+    if (/^(?:嗯+|哦+|喔+|啊+|呃+|um+|uh+|hmm+|對對|係係|好好)[。！!,.\s]*$/i.test(t) && texts.length > 1) {
+      continue;
+    }
+    const prev = out[out.length - 1];
+    if (prev) {
+      const pNorm = prev.toLowerCase().replace(/[\s，。、！？,.!?]/g, '');
+      const tNorm = t.toLowerCase().replace(/[\s，。、！？,.!?]/g, '');
+      if (pNorm === tNorm) continue;
+    }
+    out.push(t);
+  }
+  return out.length > 0 ? out : texts.map((x) => x.trim()).filter(Boolean);
+}
+
+/**
  * 判斷連續聽寫緩衝區是否已形成完整一句話（避免把「あの」「はい」「um」這種碎詞單獨丟給翻譯造成失真）
  */
 export function shouldFlushSpeechBuffer(
@@ -1168,9 +1222,9 @@ export async function transcribeAmbientConversationWithGemini(params: {
 
   const prompt = `你是一位貼身隨行口譯員。使用者正用手機錄下「身邊的人的對話／店員解說／廣播」（預期主要語言：${langCfg.countryName}${langCfg.name}，也可能夾雜英文或其他語言）${yueHint}。
 即使環境有些嘈雜或講話速度很快，請仔細聆聽整段真實音訊，幫使用者完成兩件事：
-1. 用台灣人最自然好懂的繁體中文，整理出 **「一句話看懂他們在聊什麼（大意摘要）」** 與 **「2～4 條重點筆記」**。
-2. 將聽到的重要對話拆成逐句「原文 ↔ 台灣繁體中文」，若聽得出有多人交談請區分說話者（例如「🗣️ 說話者 A」、「🗣️ 說話者 B」、「📢 廣播／店員」）。
-3. 嚴禁捏造沒聽到的內容！若某句背景音太小或太吵聽不清楚，請老實標註「（此段背景音量較小或模糊）」。
+1. 用台灣人最自然好懂的繁體中文，以**「大意優先」**整理出 **「一句話看懂他們在聊什麼／最後決定了什麼」** 與 **「2～4 條重點筆記」**。
+2. 若有**多人輪流說話或短暫重疊插話**：請優先聽清楚主要話題與結論；兩人同時開口時，先完整保留較清楚的主線句，若有聽清楚的簡短插話再寫「（插話補充：...）」，切勿把重疊字硬湊成怪句子。
+3. 將聽到的重要對話拆成逐句「原文 ↔ 台灣繁體中文」。嚴禁捏造沒聽到的內容！若某句同時太多人吵雜或背景音太小聽不清楚，請老實標註「（此段重疊／音量較小略模糊）」。
 
 請嚴格只回傳 JSON 物件（不要 markdown code block）：
 {
@@ -1355,7 +1409,7 @@ export async function summarizeLiveConversation(params: {
       params.targetLang === 'yue'
         ? '；廣東話常夾雜粵語／國語／英文混講，請統一整理成自然順暢的台灣繁體中文'
         : '';
-    const prompt = `以下是使用者在${langCfg.countryName}用手機收音記下的「身邊人的對話／廣播紀錄」（依時間先後排序，語音辨識偶爾可能有同音字誤差，請依前後文幫他修正理解${mixHint}）：
+    const prompt = `以下是使用者在${langCfg.countryName}用手機收音記下的「身邊人的對話／廣播紀錄」（依時間先後排序；可能包含多人輪流接話、偶爾短暫重疊插話或語音辨識同音誤差，**請採「大意優先」原則，自動忽略零碎雜訊與卡詞，幫使用者一眼看懂他們到底在聊什麼、決定了什麼**${mixHint}）：
 ${transcriptLines}
 
 請用最自然好懂的台灣繁體中文，嚴格只回傳 JSON 物件（不要 markdown code block）：
@@ -1436,15 +1490,18 @@ ${transcriptLines}
     }
   }
 
-  // Track 2: 100% Free Built-in Contextual Re-translation + Key Fact Extraction
-  const joinedForeign = ordered.map((s) => s.originalText.trim()).join('。 ');
-  const fallbackZhFlow = ordered
-    .map((s) =>
+  // Track 2: 100% Free Built-in Contextual Re-translation + Key Fact Extraction (Overlap-Tolerant Gist-First!)
+  const cleanedOriginals = cleanOverlapSegmentsForGist(
+    ordered.map((s) => s.originalText.trim())
+  );
+  const joinedForeign = cleanedOriginals.join('。 ');
+  const fallbackZhFlow = cleanOverlapSegmentsForGist(
+    ordered.map((s) =>
       s.translatedZh && !s.needsTranslation && s.translatedZh !== '⏳ 翻譯中…'
         ? s.translatedZh.trim()
         : s.originalText.trim()
     )
-    .join(' ');
+  ).join('。 ');
   const contextGtx = await translateViaGoogleGtx(joinedForeign, params.targetLang, 'zh-TW');
   let mergedFlowZh = contextGtx?.translated?.trim() || fallbackZhFlow;
   if (params.targetLang === 'yue') {
@@ -1460,35 +1517,46 @@ ${transcriptLines}
     ])
   ).slice(0, 6);
 
-  const zhClauses = ordered
-    .map((s) =>
+  const zhClauses = cleanOverlapSegmentsForGist(
+    ordered.map((s) =>
       s.translatedZh && !s.needsTranslation && s.translatedZh !== '⏳ 翻譯中…'
         ? s.translatedZh.trim()
         : s.originalText.trim()
     )
-    .filter(Boolean);
-  const questionClauses = zhClauses.filter((z) => /[？?嗎呢麼幾哪誰怎麼什麼]/.test(z));
+  );
+  const questionClauses = zhClauses.filter((z) => /[？?嗎呢麼幾哪誰怎麼什麼定係要不要]/.test(z));
+  const decisionClauses = zhClauses.filter((z) =>
+    /決定|確認|取消|改期|改去|延誤|延後|就這樣|好呀|沒問題|唔好|埋單|booking|confirm|cancel|delay|deadline|ok|deal/i.test(
+      z
+    )
+  );
   const bullets: string[] = [];
   if (keyFacts.length > 0) {
-    bullets.push(`關鍵數字／資訊：${keyFacts.join('、')}`);
+    bullets.push(`🎯 關鍵數字／時間地點：${keyFacts.join('、')}`);
+  }
+  if (decisionClauses.length > 0) {
+    bullets.push(`✅ 關鍵決定／行動：「${decisionClauses[decisionClauses.length - 1]}」`);
   }
   if (questionClauses.length > 0) {
-    bullets.push(`對方提到的問題：「${questionClauses[questionClauses.length - 1]}」`);
+    const q = questionClauses[questionClauses.length - 1];
+    if (!bullets.some((b) => b.includes(q))) {
+      bullets.push(`❓ 待確認／問題：「${q}」`);
+    }
   }
   const latestClause = zhClauses[zhClauses.length - 1];
   if (latestClause && !bullets.some((b) => b.includes(latestClause))) {
-    bullets.push(`最新一句重點：${latestClause}`);
+    bullets.push(`💬 剛才講到：${latestClause}`);
   }
   if (zhClauses.length > 1) {
     const firstClause = zhClauses[0];
     if (!bullets.some((b) => b.includes(firstClause))) {
-      bullets.unshift(`對話開頭提到：${firstClause}`);
+      bullets.unshift(`📌 開頭提到：${firstClause}`);
     }
   }
 
   const shortGist =
-    mergedFlowZh.length > 100
-      ? `${mergedFlowZh.slice(0, 98)}…`
+    mergedFlowZh.length > 130
+      ? `${mergedFlowZh.slice(0, 128)}…`
       : mergedFlowZh;
 
   return {
@@ -1497,9 +1565,11 @@ ${transcriptLines}
     bulletPointsZh: bullets.slice(0, 4),
     mergedFlowZh,
     toneOrMoodZh:
-      questionClauses.length > 0
-        ? `包含詢問／確認事項（共 ${ordered.length} 段）`
-        : `連續對話紀錄（共 ${ordered.length} 段）`,
+      decisionClauses.length > 0
+        ? `有確認／決定事項（共 ${ordered.length} 段）`
+        : questionClauses.length > 0
+        ? `包含詢問／討論（共 ${ordered.length} 段）`
+        : `連續對話（共 ${ordered.length} 段）`,
     keyFacts,
     engine: 'builtin-context',
     segmentCount: ordered.length,

@@ -89,6 +89,7 @@ import {
   transcribeAmbientConversationWithGemini,
   summarizeLiveConversation,
   dedupeSpeechRecognitionChunk,
+  stitchSpeechFragment,
   shouldFlushSpeechBuffer,
   translateInterimPreviewFast,
   detectMixedLanguageTags,
@@ -113,7 +114,7 @@ import {
 
 type ActiveTab = 'talk' | 'live' | 'menu' | 'phrasebook' | 'calc';
 
-const APP_BUILD_VERSION = 'v3.0';
+const APP_BUILD_VERSION = 'v3.1';
 
 const TRILINGUAL_MIX_SAMPLES: Array<{ label: string; text: string; speakerLabel: string }> = [
   {
@@ -245,6 +246,9 @@ export default function App() {
   const liveRecLangOverrideRef = useRef<'auto' | 'zh-HK' | 'zh-TW' | 'en-US'>('auto');
   const [yueRawFirstMode, setYueRawFirstMode] = useState(false);
   const yueRawFirstModeRef = useRef(false);
+  const [liveGistFocusMode, setLiveGistFocusMode] = useState(true);
+  const [liveShowAllCardsInGist, setLiveShowAllCardsInGist] = useState(false);
+  const liveRollingGistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [liveRecEngineState, setLiveRecEngineState] = useState<
     'idle' | 'listening' | 'reconnecting' | 'stalled'
   >('idle');
@@ -1016,6 +1020,10 @@ export default function App() {
       clearTimeout(liveFlushTimerRef.current);
       liveFlushTimerRef.current = null;
     }
+    if (liveRollingGistTimerRef.current) {
+      clearTimeout(liveRollingGistTimerRef.current);
+      liveRollingGistTimerRef.current = null;
+    }
     if (liveAudioCtxRef.current) {
       try {
         void liveAudioCtxRef.current.close();
@@ -1087,28 +1095,21 @@ export default function App() {
       const isSpeech = (opts?.sourceEngine || 'manual') === 'speech';
       const isCjkLang = targetLang === 'ja' || targetLang === 'yue' || targetLang === 'ko';
 
-      // Auto-stitch rapid ultra-short speech fragments (e.g. 2-word bursts from noisy audio / Cantonese video)
-      // into the preceding recent card instead of spamming unreadable 2-character cards!
+      // Auto-stitch rapid ultra-short speech fragments (within 4.5s) using natural pause separator
+      // so single-speaker bursts don't shatter into tiny cards, while turn-taking speakers stay clean!
       const latestSeg = vaultRef.current.liveSubtitles[0];
       const shouldMergeIntoLatest =
         isSpeech &&
         latestSeg &&
         latestSeg.lang === targetLang &&
         latestSeg.sourceEngine === 'speech' &&
-        now - latestSeg.updatedAt <= 9500 &&
-        (latestSeg.originalText.length < (isCjkLang ? 18 : 36) ||
-          clean.length <= (isCjkLang ? 6 : 14)) &&
-        latestSeg.originalText.length + clean.length <= (isCjkLang ? 48 : 110);
+        now - latestSeg.updatedAt <= 4500 &&
+        (latestSeg.originalText.length < (isCjkLang ? 10 : 22) ||
+          clean.length <= (isCjkLang ? 4 : 10)) &&
+        latestSeg.originalText.length + clean.length <= (isCjkLang ? 40 : 100);
 
-      const joinFrag = (a: string, b: string) => {
-        if (targetLang === 'ja' || targetLang === 'yue') {
-          const needsSpace = /[A-Za-z0-9]$/.test(a) && /^[A-Za-z0-9]/.test(b);
-          return `${a}${needsSpace ? ' ' : ''}${b}`.replace(/\s{2,}/g, ' ').trim();
-        }
-        return `${a} ${b}`.replace(/\s+/g, ' ').trim();
-      };
       const textToTranslate = shouldMergeIntoLatest
-        ? joinFrag(latestSeg.originalText.trim(), clean)
+        ? stitchSpeechFragment(latestSeg.originalText.trim(), clean, targetLang)
         : clean;
 
       liveLastCommittedTextRef.current = textToTranslate;
@@ -1164,9 +1165,19 @@ export default function App() {
       setVault(initialVault);
       void saveLocalVaultState(initialVault);
 
-      // In Cantonese "Raw-First" mode, skip per-sentence network calls while speaking so recording stays
-      // 100% dedicated to catching every single character without latency or rate-limit interference!
+      // In Cantonese "Raw-First" mode, skip per-sentence network calls while speaking,
+      // AND gently refresh the overall rolling gist card every ~3.5s so the user always sees the live big picture!
       if (shouldDeferTranslate) {
+        if (!opts?.skipAutoSummary && liveAutoGistEnabled) {
+          if (liveRollingGistTimerRef.current) {
+            clearTimeout(liveRollingGistTimerRef.current);
+          }
+          liveRollingGistTimerRef.current = setTimeout(() => {
+            if (vaultRef.current.liveSubtitles.length > 0) {
+              void refreshLiveSummary(vaultRef.current.liveSubtitles, true);
+            }
+          }, 3500);
+        }
         return;
       }
 
@@ -4318,6 +4329,21 @@ export default function App() {
                     <span className="px-2 py-0.5 rounded-full bg-[#F2CA62]/60 border border-[#C48E63] text-[10px] font-black text-[#2D251E]">
                       {langCfg.flag} {langCfg.name}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLiveGistFocusMode((prev) => !prev);
+                        setLiveShowAllCardsInGist(false);
+                      }}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-black border transition active:scale-95 ${
+                        liveGistFocusMode
+                          ? 'bg-[#1E3158] text-[#F2CA62] border-[#1E3158]'
+                          : 'bg-[#EFECE4] text-[#5C5044] border-[#DDD7C9]'
+                      }`}
+                      title="切換「⚡ 大意優先（自動收合舊逐句，先看結論＆重點）」或「📝 完整逐句」"
+                    >
+                      {liveGistFocusMode ? '⚡ 大意優先 ON' : '📝 完整逐句模式'}
+                    </button>
                   </div>
                   <p className="text-xs text-[#5C5044] mt-0.5 leading-relaxed">
                     身邊有人在講話、店員解說或廣播時，一邊錄音一邊即時轉中文預覽；停下來就幫妳整段重譯並產出「<strong>🧠 一句話看懂大意</strong>」！
@@ -4850,7 +4876,36 @@ export default function App() {
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <div className="inline-flex rounded-xl bg-[#EFECE4] border border-[#DDD7C9] p-0.5 text-[10px] font-black">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLiveGistFocusMode(true);
+                          setLiveShowAllCardsInGist(false);
+                        }}
+                        className={`px-2 py-0.5 rounded-lg transition ${
+                          liveGistFocusMode
+                            ? 'bg-[#F2CA62] text-[#2D251E] shadow-sm'
+                            : 'text-[#5C5044]'
+                        }`}
+                        title="只專心看「一句話大意＋重點結論」，完整逐句自動收合不洗版！"
+                      >
+                        ⚡ 大意優先
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLiveGistFocusMode(false)}
+                        className={`px-2 py-0.5 rounded-lg transition ${
+                          !liveGistFocusMode
+                            ? 'bg-[#F2CA62] text-[#2D251E] shadow-sm'
+                            : 'text-[#5C5044]'
+                        }`}
+                        title="同時展開所有逐句對照卡片"
+                      >
+                        📝 完整逐句
+                      </button>
+                    </div>
                     <label className="inline-flex items-center gap-1 text-[10px] font-bold text-[#5C5044] cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -4878,12 +4933,23 @@ export default function App() {
 
                 {liveSummary ? (
                   <div className="space-y-2.5">
-                    <div className="p-3 rounded-2xl bg-white border border-[#DDD7C9] space-y-1">
-                      <div className="text-[10px] font-black text-[#C48E63] uppercase">
-                        💡 一句話看懂大意
-                        {liveSummary.toneOrMoodZh ? ` ・ ${liveSummary.toneOrMoodZh}` : ''}
+                    <div className="p-3.5 rounded-2xl bg-white border-2 border-[#F2CA62] shadow-sm space-y-1">
+                      <div className="text-[10px] font-black text-[#C48E63] uppercase flex items-center justify-between gap-2 flex-wrap">
+                        <span>
+                          💡 一句話看懂大意
+                          {liveSummary.toneOrMoodZh ? ` ・ ${liveSummary.toneOrMoodZh}` : ''}
+                        </span>
+                        {liveGistFocusMode && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-[#EFECE4] text-[#5C5044] text-[9px] font-black">
+                            ⚡ 大意優先・已過濾重複插嘴
+                          </span>
+                        )}
                       </div>
-                      <p className="text-sm font-black text-[#2D251E] leading-relaxed">
+                      <p
+                        className={`${
+                          liveGistFocusMode ? 'text-base' : 'text-sm'
+                        } font-black text-[#2D251E] leading-relaxed`}
+                      >
                         {liveSummary.overallGistZh}
                       </p>
                     </div>
@@ -5083,14 +5149,47 @@ export default function App() {
                     點上方「🎙️ 開始錄音即時轉中文」即可一邊錄下身邊對話、一邊看即時中文與整段大意，或點「📢 測試機場／電車廣播」先試試看。
                   </div>
                 </div>
-              ) : (
-                [...vault.liveSubtitles]
-                  .sort((a, b) =>
-                    liveSortOrder === 'chronological'
-                      ? a.createdAt - b.createdAt
-                      : b.createdAt - a.createdAt
-                  )
-                  .map((seg) => {
+              ) : (() => {
+                const sortedAll = [...vault.liveSubtitles].sort((a, b) =>
+                  liveSortOrder === 'chronological'
+                    ? a.createdAt - b.createdAt
+                    : b.createdAt - a.createdAt
+                );
+                const collapseOlder =
+                  liveGistFocusMode && !liveShowAllCardsInGist && sortedAll.length > 2;
+                const displaySegs = collapseOlder
+                  ? [...vault.liveSubtitles]
+                      .sort((a, b) => b.createdAt - a.createdAt)
+                      .slice(0, 2)
+                      .sort((a, b) =>
+                        liveSortOrder === 'chronological'
+                          ? a.createdAt - b.createdAt
+                          : b.createdAt - a.createdAt
+                      )
+                  : sortedAll;
+                return (
+                  <>
+                    {collapseOlder && (
+                      <button
+                        type="button"
+                        onClick={() => setLiveShowAllCardsInGist(true)}
+                        className="w-full py-2 px-3 rounded-2xl bg-[#EFECE4] hover:bg-[#F2CA62]/40 border border-[#DDD7C9] text-[11px] font-black text-[#5C5044] flex items-center justify-center gap-1.5 transition"
+                      >
+                        <span>
+                          📂 大意優先模式：先顯示最新 2 句（已收合另外 {sortedAll.length - 2} 句，點此展開全部）
+                        </span>
+                      </button>
+                    )}
+                    {liveGistFocusMode && liveShowAllCardsInGist && sortedAll.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => setLiveShowAllCardsInGist(false)}
+                        className="w-full py-1.5 px-3 rounded-2xl bg-[#FAF8F3] hover:bg-[#EFECE4] border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] transition"
+                      >
+                        🔼 收合較早的逐句紀錄（保留大意＋最新 2 句）
+                      </button>
+                    )}
+                    {displaySegs.map((seg) => {
                     const sCfg = LANGUAGES[seg.lang] || langCfg;
                     const isEditing = editingLiveSegId === seg.id;
                     const mixedInfo =
@@ -5270,8 +5369,10 @@ export default function App() {
                         )}
                       </div>
                     );
-                  })
-              )}
+                  })}
+                  </>
+                );
+              })()}
             </section>
           </div>
         )}

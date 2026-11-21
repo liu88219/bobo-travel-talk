@@ -186,9 +186,8 @@ export function buildLocalWordBreakdowns(
     }
   }
 
-  // Mixed Cantonese/Mandarin + English code-switching word breakdowns (Kongish chips)
-  const mixed = detectMixedLanguageTags(foreignText);
-  if (targetLang === 'yue' || (mixed.hasMandarinOrCjk && mixed.hasEnglish)) {
+  // Mixed Cantonese/Mandarin + English code-switching word breakdowns — ONLY for Cantonese (yue)!
+  if (targetLang === 'yue') {
     let shadow = foreignText;
     for (const entry of HONG_KONG_MIXED_ENGLISH_MAP) {
       const re = new RegExp(entry.pattern.source, 'gi');
@@ -204,10 +203,7 @@ export function buildLocalWordBreakdowns(
         shadow = shadow.replace(new RegExp(entry.pattern.source, 'gi'), ' ');
       }
     }
-  }
 
-  // Spoken Cantonese idioms from glossary (when not already emitted above)
-  if (targetLang === 'yue') {
     for (const [pattern, twMeaning] of HK_CANTONESE_GLOSSARY_NOTES) {
       const singleRe = new RegExp(pattern.source);
       const m = foreignText.match(singleRe);
@@ -296,66 +292,63 @@ const HK_CANTONESE_GLOSSARY_NOTES: Array<[RegExp, string]> = [
 const HONG_KONG_MIXED_ENGLISH_MAP: Array<{ pattern: RegExp; term: string; zh: string }> = [
   { pattern: /\bdouble[\s-]?check\b/i, term: 'double check', zh: '再次確認' },
   { pattern: /\blast\s+order\b/i, term: 'last order', zh: '最後點餐' },
-  { pattern: /\bcheck[\s-]?in\b/i, term: 'check-in', zh: '辦理入住／報到' },
-  { pattern: /\bcheck[\s-]?out\b/i, term: 'check-out', zh: '退房／結帳' },
-  { pattern: /\bfollow[\s-]?up\b/i, term: 'follow up', zh: '跟進確認' },
+  { pattern: /\bcheck[\s-]?in\b/i, term: 'check-in', zh: '入住報到' },
+  { pattern: /\bcheck[\s-]?out\b/i, term: 'check-out', zh: '退房' },
+  { pattern: /\bfollow[\s-]?up\b/i, term: 'follow up', zh: '跟進' },
   { pattern: /\bcredit\s+card\b/i, term: 'credit card', zh: '信用卡' },
   { pattern: /\bhalf\s+price\b/i, term: 'half price', zh: '半價' },
   { pattern: /\btax[\s-]?free\b/i, term: 'tax-free', zh: '免稅' },
   { pattern: /\bhold\s+on\b/i, term: 'hold on', zh: '稍等一下' },
-  { pattern: /\bsend\s+email\b/i, term: 'send email', zh: '寄信／寄 Email' },
-  { pattern: /\bemail\b/i, term: 'email', zh: '電子郵件' },
-  { pattern: /\breschedule\b/i, term: 'reschedule', zh: '改期／重新安排' },
-  { pattern: /\bwhatsapp\b/i, term: 'WhatsApp', zh: 'WhatsApp 訊息' },
-  { pattern: /\binvoice\b/i, term: 'invoice', zh: '發票／請款單' },
-  { pattern: /\bbooking\b/i, term: 'booking', zh: '訂位／預約' },
+  { pattern: /\bsend\s+email\b/i, term: 'send email', zh: '寄信' },
+  { pattern: /\bemail\b/i, term: 'email', zh: '電郵' },
+  { pattern: /\breschedule\b/i, term: 'reschedule', zh: '改期' },
+  { pattern: /\binvoice\b/i, term: 'invoice', zh: '發票' },
+  { pattern: /\bbooking\b/i, term: 'booking', zh: '訂位' },
   { pattern: /\bbook\b/i, term: 'book', zh: '預訂' },
-  { pattern: /\bcheck\b/i, term: 'check', zh: '確認／檢查' },
+  { pattern: /\bcheck\b/i, term: 'check', zh: '確認' },
   { pattern: /\bconfirm\b/i, term: 'confirm', zh: '確認' },
   { pattern: /\bcancel\b/i, term: 'cancel', zh: '取消' },
-  { pattern: /\border\b/i, term: 'order', zh: '點餐／訂單' },
+  { pattern: /\border\b/i, term: 'order', zh: '點餐' },
   { pattern: /\btakeaway\b/i, term: 'takeaway', zh: '外帶' },
   { pattern: /\bdelay\b/i, term: 'delay', zh: '延誤' },
   { pattern: /\bboarding\b/i, term: 'boarding', zh: '登機' },
   { pattern: /\bgate\b/i, term: 'gate', zh: '登機門' },
   { pattern: /\bupgrade\b/i, term: 'upgrade', zh: '升級' },
   { pattern: /\bsize\b/i, term: 'size', zh: '尺寸' },
-  { pattern: /\breceipt\b/i, term: 'receipt', zh: '收據／發票' },
+  { pattern: /\breceipt\b/i, term: 'receipt', zh: '收據' },
   { pattern: /\bmenu\b/i, term: 'menu', zh: '菜單' },
   { pattern: /\bbill\b/i, term: 'bill', zh: '帳單' },
   { pattern: /\bcharge\b/i, term: 'charge', zh: '收費' },
   { pattern: /\bdiscount\b/i, term: 'discount', zh: '折扣' },
-  { pattern: /\brefund\b/i, term: 'refund', zh: '退款／退稅' },
+  { pattern: /\brefund\b/i, term: 'refund', zh: '退款' },
   { pattern: /\bcash\b/i, term: 'cash', zh: '現金' },
   { pattern: /\bmeeting\b/i, term: 'meeting', zh: '開會' },
   { pattern: /\bproject\b/i, term: 'project', zh: '專案' },
   { pattern: /\bdeadline\b/i, term: 'deadline', zh: '截止日' },
-  { pattern: /\bschedule\b/i, term: 'schedule', zh: '行程／排程' },
-  { pattern: /\bupdate\b/i, term: 'update', zh: '更新進度' },
-  { pattern: /\bfeedback\b/i, term: 'feedback', zh: '意見回饋' },
+  { pattern: /\bschedule\b/i, term: 'schedule', zh: '行程' },
+  { pattern: /\bupdate\b/i, term: 'update', zh: '更新' },
+  { pattern: /\bfeedback\b/i, term: 'feedback', zh: '回饋' },
   { pattern: /\bsorry\b/i, term: 'sorry', zh: '不好意思' },
-  { pattern: /\basap\b/i, term: 'ASAP', zh: '越快越好' },
+  { pattern: /\basap\b/i, term: 'ASAP', zh: '盡快' },
   { pattern: /\bcall\b/i, term: 'call', zh: '打電話' },
   { pattern: /\bmessage\b/i, term: 'message', zh: '傳訊息' },
-  { pattern: /\btext\b/i, term: 'text', zh: '傳簡訊' },
   { pattern: /\blunch\b/i, term: 'lunch', zh: '午餐' },
   { pattern: /\bdinner\b/i, term: 'dinner', zh: '晚餐' },
   { pattern: /\bcoffee\b/i, term: 'coffee', zh: '咖啡' },
   { pattern: /\bready\b/i, term: 'ready', zh: '準備好' },
-  { pattern: /\bfull\b/i, term: 'full', zh: '客滿／滿了' },
+  { pattern: /\bfull\b/i, term: 'full', zh: '客滿' },
   { pattern: /\bbusy\b/i, term: 'busy', zh: '忙碌' },
-  { pattern: /\bavailable\b/i, term: 'available', zh: '有空／可供應' },
-  { pattern: /\bshare\b/i, term: 'share', zh: '分食／分享' },
-  { pattern: /\bdeposit\b/i, term: 'deposit', zh: '押金／訂金' },
-  { pattern: /\bvoucher\b/i, term: 'voucher', zh: '優惠券／兌換券' },
+  { pattern: /\bavailable\b/i, term: 'available', zh: '有空' },
+  { pattern: /\bshare\b/i, term: 'share', zh: '分享' },
+  { pattern: /\bdeposit\b/i, term: 'deposit', zh: '訂金' },
+  { pattern: /\bvoucher\b/i, term: 'voucher', zh: '優惠券' },
   { pattern: /\bqueue\b/i, term: 'queue', zh: '排隊' },
-  { pattern: /\bchallenging\b/i, term: 'challenging', zh: '有挑戰性' },
   { pattern: /\bactually\b/i, term: 'actually', zh: '其實' },
   { pattern: /\banyway\b/i, term: 'anyway', zh: '總之' },
-  { pattern: /\bchange\b/i, term: 'change', zh: '更改／找零' },
+  { pattern: /\bchange\b/i, term: 'change', zh: '更改' },
   { pattern: /\bseat\b/i, term: 'seat', zh: '座位' },
-  { pattern: /\btable\b/i, term: 'table', zh: '桌子／訂桌' },
-  { pattern: /\btransfer\b/i, term: 'transfer', zh: '轉乘／轉帳' },
+  { pattern: /\btable\b/i, term: 'table', zh: '訂桌' },
+  { pattern: /\btransfer\b/i, term: 'transfer', zh: '轉乘' },
   { pattern: /\bexit\b/i, term: 'exit', zh: '出口' },
 ];
 
@@ -450,7 +443,9 @@ export function annotateHongKongCantoneseMenuZh(
     const testRe = new RegExp(entry.pattern.source, baseFlags);
     if (!testRe.test(working)) continue;
     const globalRe = new RegExp(entry.pattern.source, `${baseFlags}g`);
-    working = working.replace(globalRe, (matched) => {
+    working = working.replace(globalRe, (matched, offset: number) => {
+      const prefix = working.slice(Math.max(0, offset - entry.zh.length - 2), offset);
+      if (prefix.includes(entry.zh)) return hold(matched);
       return hold(`${entry.zh}(${matched})`);
     });
   }
@@ -483,38 +478,8 @@ export function annotateHongKongCantoneseMenuZh(
     }
   }
   if (notes.length === 0) return enriched;
-  const uniqueNotes = Array.from(new Set(notes)).slice(0, 4).join('・');
+  const uniqueNotes = Array.from(new Set(notes)).slice(0, 3).join('・');
   return `${enriched}（台灣說法：${uniqueNotes}）`;
-}
-
-/**
- * 若句中夾雜較長的英文片語且 Google 廣東話引擎沒幫它翻掉，單獨補翻那段英文並 inline 標註！
- */
-export async function enrichMixedEnglishPhrases(
-  textWithRemainingEn: string
-): Promise<string> {
-  // Strip out already-parenthesized glosses before scanning for untranslated English spans
-  const masked = textWithRemainingEn.replace(/\([^()]*\)|（[^（）]*）/g, ' ');
-  const spans = masked.match(
-    /[A-Za-z][A-Za-z0-9'’-]*(?:\s+[A-Za-z][A-Za-z0-9'’-]*){1,6}/g
-  );
-  if (!spans || spans.length === 0) return textWithRemainingEn;
-  let out = textWithRemainingEn;
-  const uniqueSpans = Array.from(new Set(spans.map((s) => s.trim()))).slice(0, 3);
-  for (const span of uniqueSpans) {
-    if (span.length < 4 || out.includes(`(${span})`)) continue;
-    const gtxEn = await translateViaGoogleGtx(span, 'en', 'zh-TW');
-    if (gtxEn?.translated && gtxEn.translated.toLowerCase() !== span.toLowerCase()) {
-      const idx = out.indexOf(span);
-      if (idx >= 0 && out[idx - 1] !== '(' && out[idx - 1] !== '（') {
-        out =
-          out.slice(0, idx) +
-          `${gtxEn.translated.trim()}(${span})` +
-          out.slice(idx + span.length);
-      }
-    }
-  }
-  return out;
 }
 
 /**
@@ -710,8 +675,24 @@ async function translateViaGemini(
   ],
   "culturalTip": "一句簡短實用的當地旅遊溝通小提醒（25字內）"
 }`
-      : `你是一位精通${langCfg.countryName}${langCfg.name}與台灣繁體中文的隨身出國口譯專家，特別擅長處理**三語自由混講（Code-Switching）**，例如香港／澳門常見的「廣東話（粵語）＋中文（國語）＋英文」夾雜句（如「唔該幫我 double check 下個 booking，我剛才已經 confirm 咗」）。
-請將以下當地人或廣播說的話翻譯成自然流暢、純粹好懂的【台灣繁體中文】（把句中夾雜的英文單字與粵語口語全部翻成自然台灣用語，重要專有名詞可在括號保留原文），並拆解裡面的關鍵外語／粵語／英文單字讓旅客核對。
+      : targetLang === 'yue'
+      ? `你是一位精通香港／澳門廣東話（粵語）與台灣繁體中文的隨身口譯專家，特別擅長處理廣東話常見的**「粵語＋國語＋英文」混講（Code-Switching）**（例如「唔該幫我 double check 下個 booking，我剛才已經 confirm 咗」）。
+請將以下當地人說的話翻譯成自然流暢的【台灣繁體中文】（句中夾雜的英文詞彙與粵語口語皆翻成自然台灣用語），並拆解關鍵詞彙讓旅客核對。
+待翻譯外語原文：「${text}」
+請嚴格只回傳 JSON 物件（不要 markdown code block），欄位如下：
+{
+  "translatedText": "翻譯後的台灣繁體中文",
+  "backTranslatedText": "字面直譯核對（繁體中文）",
+  "confidenceScore": 98,
+  "romanization": "原文的羅馬拼音",
+  "phoneticHint": "若旅客想簡單回應，推薦一句最實用的${langCfg.name}短句＋台灣空耳發音",
+  "wordBreakdowns": [
+    { "term": "原文中的關鍵單字", "meaning": "中文意思", "pronunciation": "空耳短音" }
+  ],
+  "culturalTip": "一句簡短情境重點提示（例如金額、月台、或是店員在問什麼，25字內）"
+}`
+      : `你是一位精通${langCfg.countryName}${langCfg.name}與台灣繁體中文的隨身出國口譯專家。
+請將以下當地人或廣播說的外語翻譯成自然好懂的【台灣繁體中文】，並拆解裡面的關鍵外語單字讓旅客核對。
 待翻譯外語原文：「${text}」
 請嚴格只回傳 JSON 物件（不要 markdown code block），欄位如下：
 {
@@ -804,6 +785,8 @@ export async function translateTextDualEngine(params: {
   tone?: TranslationTone;
   geminiApiKey?: string;
   geminiModel?: string;
+  /** Live subtitle streaming sets this true to skip extra reverse GTX HTTP round-trip for instant latency! */
+  skipBackTranslation?: boolean;
 }): Promise<TranslationResult> {
   const cleanText = params.text.trim();
   if (!cleanText) {
@@ -834,39 +817,38 @@ export async function translateTextDualEngine(params: {
   const gtx = await translateViaGoogleGtx(cleanText, sl, tl);
   if (gtx) {
     // Perform independent Reverse Back-Translation (`tl -> sl`) so the user can verify 100% accuracy!
-    let backTranslatedText = '';
-    let confidenceScore = 94;
-    if (params.direction === 'zh-to-foreign') {
-      const reverseGtx = await translateViaGoogleGtx(
-        gtx.translated,
-        params.targetLang,
-        'zh-TW'
-      );
-      backTranslatedText = reverseGtx?.translated || cleanText;
-      confidenceScore = computeBackTranslationConfidence(cleanText, backTranslatedText);
-    } else {
-      const reverseGtx = await translateViaGoogleGtx(
-        gtx.translated,
-        'zh-TW',
-        params.targetLang
-      );
-      backTranslatedText = reverseGtx?.translated
-        ? `逆向回譯核對：${reverseGtx.translated}`
-        : gtx.translated;
-      confidenceScore = 95;
+    // (Skipped in live subtitle streaming so subtitles pop up in a single ~250ms round-trip!)
+    let backTranslatedText = gtx.translated;
+    let confidenceScore = 95;
+    if (!params.skipBackTranslation) {
+      if (params.direction === 'zh-to-foreign') {
+        const reverseGtx = await translateViaGoogleGtx(
+          gtx.translated,
+          params.targetLang,
+          'zh-TW'
+        );
+        backTranslatedText = reverseGtx?.translated || cleanText;
+        confidenceScore = computeBackTranslationConfidence(cleanText, backTranslatedText);
+      } else {
+        const reverseGtx = await translateViaGoogleGtx(
+          gtx.translated,
+          'zh-TW',
+          params.targetLang
+        );
+        backTranslatedText = reverseGtx?.translated
+          ? `逆向回譯核對：${reverseGtx.translated}`
+          : gtx.translated;
+        confidenceScore = 95;
+      }
     }
 
     const foreignSentence =
       params.direction === 'zh-to-foreign' ? gtx.translated : cleanText;
-    const isMixedTrilingual =
-      params.direction === 'foreign-to-zh' &&
-      (params.targetLang === 'yue' || detectMixedLanguageTags(cleanText).isMixed);
-    let finalTranslated = isMixedTrilingual
-      ? annotateHongKongCantoneseMenuZh(cleanText, gtx.translated)
-      : gtx.translated;
-    if (isMixedTrilingual && /\b[A-Za-z]{2,}\s+[A-Za-z]{2,}\b/.test(finalTranslated)) {
-      finalTranslated = await enrichMixedEnglishPhrases(finalTranslated);
-    }
+    // Mixed Cantonese/Mandarin/English annotation runs ONLY for Cantonese (`yue`), with ZERO extra network hops!
+    const finalTranslated =
+      params.direction === 'foreign-to-zh' && params.targetLang === 'yue'
+        ? annotateHongKongCantoneseMenuZh(cleanText, gtx.translated)
+        : gtx.translated;
 
     return {
       sourceText: cleanText,
@@ -886,12 +868,10 @@ export async function translateTextDualEngine(params: {
   const mm = await translateViaMyMemory(cleanText, sl, tl);
   if (mm) {
     const foreignSentence = params.direction === 'zh-to-foreign' ? mm : cleanText;
-    const isMixedMm =
-      params.direction === 'foreign-to-zh' &&
-      (params.targetLang === 'yue' || detectMixedLanguageTags(cleanText).isMixed);
-    const finalMm = isMixedMm
-      ? annotateHongKongCantoneseMenuZh(cleanText, mm)
-      : mm;
+    const finalMm =
+      params.direction === 'foreign-to-zh' && params.targetLang === 'yue'
+        ? annotateHongKongCantoneseMenuZh(cleanText, mm)
+        : mm;
     return {
       sourceText: cleanText,
       translatedText: finalMm,
@@ -907,12 +887,10 @@ export async function translateTextDualEngine(params: {
 
   // 4. Ultimate offline graceful fallback
   const cfg = LANGUAGES[params.targetLang];
-  const isOfflineMixed =
-    params.direction === 'foreign-to-zh' &&
-    (params.targetLang === 'yue' || detectMixedLanguageTags(cleanText).isMixed);
-  const offlineForeignToZh = isOfflineMixed
-    ? annotateHongKongCantoneseMenuZh(cleanText, cleanText)
-    : cleanText;
+  const offlineForeignToZh =
+    params.direction === 'foreign-to-zh' && params.targetLang === 'yue'
+      ? annotateHongKongCantoneseMenuZh(cleanText, cleanText)
+      : cleanText;
   return {
     sourceText: cleanText,
     translatedText:
@@ -965,7 +943,22 @@ export async function transcribeAndTranslateAudioWithGemini(params: {
   ],
   "culturalTip": "簡短旅遊小提醒（25字內）"
 }`
-      : `請聽這段【${langCfg.name}】語音或廣播錄音（注意：說話者可能會在**廣東話（粵語）、中文（國語）、英文**之間自由混講 Code-Switching，請精準保留原文混合字詞！），先精準聽寫出原文，接著將所有粵語口語、國語與英文夾雜詞彙全部流暢地翻成自然好懂的【台灣繁體中文】。
+      : params.targetLang === 'yue'
+      ? `請聽這段【廣東話（粵語）】語音錄音（注意：香港／澳門對話常夾雜**粵語＋國語＋英文**混講 Code-Switching，請精準保留原文混合字詞），先聽寫出原文，接著將所有粵語口語、國語與英文夾雜詞彙全部流暢翻成自然好懂的【台灣繁體中文】。
+請嚴格只回傳 JSON 物件：
+{
+  "sourceText": "聽寫出的廣東話（或中英粵混講）原文",
+  "translatedText": "翻譯後的台灣繁體中文",
+  "backTranslatedText": "字面直譯核對（繁體中文）",
+  "confidenceScore": 98,
+  "romanization": "原文粵語拼音",
+  "phoneticHint": "重點關鍵字或建議簡短回應的空耳發音",
+  "wordBreakdowns": [
+    { "term": "關鍵字", "meaning": "中文意思" }
+  ],
+  "culturalTip": "店員或廣播的核心重點提醒（25字內）"
+}`
+      : `請聽這段【${langCfg.name}】語音或廣播錄音，先精準聽寫出${langCfg.name}原文，接著翻譯成自然好懂的【台灣繁體中文】。
 請嚴格只回傳 JSON 物件：
 {
   "sourceText": "聽寫出的${langCfg.name}原文",
@@ -1095,8 +1088,8 @@ export function shouldFlushSpeechBuffer(
   const clean = buffer.trim();
   if (!clean) return false;
   if (targetLang === 'ja' || targetLang === 'ko' || targetLang === 'yue') {
-    if (/[。！？!?]$/.test(clean) && clean.length >= 6) return true;
-    return clean.length >= 24;
+    if (/[。！？!?]$/.test(clean) && clean.length >= 5) return true;
+    return clean.length >= 16;
   }
   if (/[.!?]$/.test(clean) && clean.length >= 12) return true;
   const wordCount = clean.split(/\s+/).filter(Boolean).length;
@@ -1112,16 +1105,15 @@ export async function translateInterimPreviewFast(
 ): Promise<string> {
   const clean = text.trim();
   if (clean.length < 2) return '';
-  const shouldAnnotateMix = targetLang === 'yue' || detectMixedLanguageTags(clean).isMixed;
   const gtx = await translateViaGoogleGtx(clean, targetLang, 'zh-TW');
   if (gtx?.translated) {
-    return shouldAnnotateMix
+    return targetLang === 'yue'
       ? annotateHongKongCantoneseMenuZh(clean, gtx.translated)
       : gtx.translated;
   }
   const mm = await translateViaMyMemory(clean, targetLang, 'zh-TW');
   if (mm) {
-    return shouldAnnotateMix ? annotateHongKongCantoneseMenuZh(clean, mm) : mm;
+    return targetLang === 'yue' ? annotateHongKongCantoneseMenuZh(clean, mm) : mm;
   }
   return '';
 }
@@ -1171,8 +1163,8 @@ export async function transcribeAmbientConversationWithGemini(params: {
 
   const yueHint =
     params.targetLang === 'yue'
-      ? '（特別注意：說話者極可能進行**「廣東話（粵語）＋中文（國語）＋英文」三語自由混講（Code-Switching）**！`originalText` 請忠實保留原音夾雜的粵字、中文與英文單字，例如「唔該幫我 double check 下個 booking」；`translatedZh` 與 `overallGistZh` 請翻成**純粹流暢的台灣繁體中文**，把英文詞彙與港式口語都轉成台灣日常用語，重要茶餐廳或專有名詞可在括號補註原文！）'
-      : '（若音訊中夾雜廣東話、中文或英文混講 Code-Switching，`originalText` 請忠實照實聽寫混合原文，`translatedZh` 請全部翻成自然順暢的台灣繁體中文）';
+      ? '（特別注意：香港／澳門廣東話極常出現**「粵語＋國語＋英文」三語混講（Code-Switching）**！`originalText` 請忠實保留原音夾雜的粵字、中文與英文單字，例如「唔該幫我 double check 下個 booking」；`translatedZh` 與 `overallGistZh` 請翻成**純粹流暢的台灣繁體中文**，把英文詞彙與港式口語都轉成台灣日常用語！）'
+      : '';
 
   const prompt = `你是一位貼身隨行口譯員。使用者正用手機錄下「身邊的人的對話／店員解說／廣播」（預期主要語言：${langCfg.countryName}${langCfg.name}，也可能夾雜英文或其他語言）${yueHint}。
 即使環境有些嘈雜或講話速度很快，請仔細聆聽整段真實音訊，幫使用者完成兩件事：
@@ -1355,7 +1347,11 @@ export async function summarizeLiveConversation(params: {
   if (params.geminiApiKey && params.geminiApiKey.trim().length > 10) {
     const cleanKey = params.geminiApiKey.trim();
     const model = params.geminiModel || 'gemini-2.5-flash';
-    const prompt = `以下是使用者在${langCfg.countryName}用手機收音記下的「身邊人的對話／廣播紀錄」（依時間先後排序；說話者可能會在**廣東話／國語／英文**之間自由混講 Code-Switching，且語音辨識偶爾有同音字誤差，請依前後文幫他修正並統一轉為順暢的**台灣繁體中文**）：
+    const mixHint =
+      params.targetLang === 'yue'
+        ? '；廣東話常夾雜粵語／國語／英文混講，請統一整理成自然順暢的台灣繁體中文'
+        : '';
+    const prompt = `以下是使用者在${langCfg.countryName}用手機收音記下的「身邊人的對話／廣播紀錄」（依時間先後排序，語音辨識偶爾可能有同音字誤差，請依前後文幫他修正理解${mixHint}）：
 ${transcriptLines}
 
 請用最自然好懂的台灣繁體中文，嚴格只回傳 JSON 物件（不要 markdown code block）：
@@ -1441,13 +1437,8 @@ ${transcriptLines}
   const fallbackZhFlow = ordered.map((s) => s.translatedZh.trim()).join(' ');
   const contextGtx = await translateViaGoogleGtx(joinedForeign, params.targetLang, 'zh-TW');
   let mergedFlowZh = contextGtx?.translated?.trim() || fallbackZhFlow;
-  const isMixedFlow =
-    params.targetLang === 'yue' || detectMixedLanguageTags(joinedForeign).isMixed;
-  if (isMixedFlow) {
+  if (params.targetLang === 'yue') {
     mergedFlowZh = annotateHongKongCantoneseMenuZh(joinedForeign, mergedFlowZh);
-    if (/\b[A-Za-z]{2,}\s+[A-Za-z]{2,}\b/.test(mergedFlowZh)) {
-      mergedFlowZh = await enrichMixedEnglishPhrases(mergedFlowZh);
-    }
   }
 
   const allCombined = `${joinedForeign} ${fallbackZhFlow} ${mergedFlowZh}`;

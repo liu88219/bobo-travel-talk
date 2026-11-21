@@ -355,15 +355,19 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
       '唔該幫我 double check 下個 booking，last order 前 confirm 定 cancel？',
       '請幫我 double check 下個 booking，last order 前 confirm 定 cancel？'
     );
-    // Exact inline glosses present
+    // Exact inline glosses present (concise, no wordy slashes)
     expect(glossed).toContain('再次確認(double check)');
-    expect(glossed).toContain('訂位／預約(booking)');
+    expect(glossed).toContain('訂位(booking)');
     expect(glossed).toContain('最後點餐(last order)');
     expect(glossed).toContain('確認(confirm)');
     expect(glossed).toContain('取消(cancel)');
     // MUST NOT double-wrap "check" inside "(double check)" or "order" inside "(last order)"!
-    expect(glossed).not.toContain('檢查(check)');
-    expect(glossed).not.toContain('點餐／訂單(order)');
+    expect(glossed).not.toContain('確認(check)');
+    expect(glossed).not.toContain('點餐(order)');
+    // MUST NOT duplicate adjacent translation ("確認 confirm" -> keep crisp, not "確認 確認(confirm)")
+    expect(annotateHongKongCantoneseMenuZh('confirm', '我已經確認 confirm 了')).not.toContain(
+      '確認 確認(confirm)'
+    );
 
     const chips = buildLocalWordBreakdowns(
       '頭先個 meeting 講呢個 project deadline delay 咗，要 double check 下埋單！',
@@ -374,5 +378,10 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     expect(chips.some((c) => c.term === 'meeting')).toBe(true);
     expect(chips.some((c) => c.term.includes('埋單'))).toBe(true);
     expect(chips.some((c) => c.term === '頭先')).toBe(true);
+
+    // Non-Cantonese languages MUST stay strictly clean & unaffected by HK mixed-language chips
+    const jaChips = buildLocalWordBreakdowns('すみません meeting booking', 'ja');
+    expect(jaChips.some((c) => c.term === 'meeting')).toBe(false);
+    expect(jaChips.some((c) => c.term === 'booking')).toBe(false);
   });
 });

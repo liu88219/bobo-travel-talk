@@ -113,7 +113,7 @@ import {
 
 type ActiveTab = 'talk' | 'live' | 'menu' | 'phrasebook' | 'calc';
 
-const APP_BUILD_VERSION = 'v2.8';
+const APP_BUILD_VERSION = 'v2.9';
 
 const TRILINGUAL_MIX_SAMPLES: Array<{ label: string; text: string; speakerLabel: string }> = [
   {
@@ -241,6 +241,12 @@ export default function App() {
     'auto' | 'zh-HK' | 'zh-TW' | 'en-US'
   >('auto');
   const liveRecLangOverrideRef = useRef<'auto' | 'zh-HK' | 'zh-TW' | 'en-US'>('auto');
+  useEffect(() => {
+    if (vault.profile.activeLang !== 'yue' && liveRecLangOverrideRef.current !== 'auto') {
+      liveRecLangOverrideRef.current = 'auto';
+      setLiveRecLangOverride('auto');
+    }
+  }, [vault.profile.activeLang]);
   const [hasNewAppUpdate, setHasNewAppUpdate] = useState(false);
   const isStandalonePwa = useMemo(() => detectStandalonePwa(), []);
   const liveHeardAnySpeechRef = useRef(false);
@@ -1054,14 +1060,14 @@ export default function App() {
     ) => {
       const clean = foreignSpeech.trim();
       if (!clean) return;
-      const overrideRec = liveRecLangOverrideRef.current;
+      const activeLang = vaultRef.current.profile.activeLang;
+      const overrideRec =
+        activeLang === 'yue' ? liveRecLangOverrideRef.current : 'auto';
       const targetLang: LanguageCode =
         opts?.langOverride ||
-        (opts?.sourceEngine === 'speech' && overrideRec === 'en-US'
+        (opts?.sourceEngine === 'speech' && activeLang === 'yue' && overrideRec === 'en-US'
           ? 'en'
-          : opts?.sourceEngine === 'speech' && (overrideRec === 'zh-HK' || overrideRec === 'zh-TW')
-          ? 'yue'
-          : vaultRef.current.profile.activeLang);
+          : activeLang);
       const now = Date.now();
       const isSpeech = (opts?.sourceEngine || 'manual') === 'speech';
       const isCjkLang = targetLang === 'ja' || targetLang === 'yue' || targetLang === 'ko';
@@ -1099,6 +1105,7 @@ export default function App() {
           tone: 'concise',
           geminiApiKey: vaultRef.current.profile.geminiApiKey,
           geminiModel: vaultRef.current.profile.geminiModel,
+          skipBackTranslation: true,
         });
         const nextUpdatedAt = Date.now();
         if (shouldMergeIntoLatest && latestSeg) {
@@ -1201,14 +1208,19 @@ export default function App() {
       clearTimeout(livePreviewTimerRef.current);
     }
     livePreviewTimerRef.current = setTimeout(async () => {
+      const activeLang = vaultRef.current.profile.activeLang;
+      const previewLang: LanguageCode =
+        activeLang === 'yue' && liveRecLangOverrideRef.current === 'en-US'
+          ? 'en'
+          : activeLang;
       const previewZh = await translateInterimPreviewFast(
         combined,
-        vaultRef.current.profile.activeLang
+        previewLang
       );
       if (previewZh && isLiveListeningRef.current) {
         setLiveInterimZh(previewZh);
       }
-    }, 650);
+    }, 320);
   }, []);
 
   const analyzeLiveAudioBlobWithGemini = useCallback(
@@ -1521,6 +1533,7 @@ export default function App() {
         const currentCfg = LANGUAGES[vaultRef.current.profile.activeLang] || langCfg;
         const rec = new SpeechCtor();
         const manualBcp47 =
+          vaultRef.current.profile.activeLang === 'yue' &&
           liveRecLangOverrideRef.current !== 'auto'
             ? liveRecLangOverrideRef.current
             : currentCfg.bcp47;
@@ -1581,7 +1594,7 @@ export default function App() {
                     }
                     liveFlushTimerRef.current = setTimeout(() => {
                       flushLiveClauseBuffer();
-                    }, 2600);
+                    }, 1200);
                   }
                 }
               }
@@ -1671,7 +1684,7 @@ export default function App() {
                 }
                 liveFlushTimerRef.current = setTimeout(() => {
                   flushLiveClauseBuffer();
-                }, 2600);
+                }, 1200);
               }
             }
           }
@@ -4118,47 +4131,51 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Trilingual Code-Switching Live Mic Language Quick Switcher (supports hot-switch mid-recording!) */}
-              <div className="flex items-center gap-1.5 flex-wrap px-2.5 py-2 rounded-2xl bg-[#EFECE4]/90 border border-[#DDD7C9]">
-                <span className="text-[10px] font-black text-[#5C5044] shrink-0">
-                  🌐 混講收音語系（可錄音中秒切）：
-                </span>
-                {(
-                  [
-                    { id: 'auto', label: `🎯 跟隨 ${langCfg.flag}` },
-                    { id: 'zh-HK', label: '🇭🇰 粵＋英 (zh-HK)' },
-                    { id: 'zh-TW', label: '🇹🇼 國＋英 (zh-TW)' },
-                    { id: 'en-US', label: '🇺🇸 純英文 (en-US)' },
-                  ] as const
-                ).map((opt) => {
-                  const active = liveRecLangOverride === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => {
-                        liveRecLangOverrideRef.current = opt.id;
-                        setLiveRecLangOverride(opt.id);
-                        if (isLiveListeningRef.current && liveRecRef.current) {
-                          try {
-                            liveRecRef.current.stop();
-                          } catch {
-                            // ignore; onend will immediately respawn using updated ref
+              {/* Trilingual Code-Switching Live Mic Language Quick Switcher — ONLY shown for Hong Kong/Macau Cantonese (`yue`) */}
+              {vault.profile.activeLang === 'yue' && (
+                <div className="flex items-center gap-1.5 flex-wrap px-2.5 py-2 rounded-2xl bg-[#EFECE4]/90 border border-[#DDD7C9]">
+                  <span className="text-[10px] font-black text-[#5C5044] shrink-0">
+                    🇭🇰 粵＋國＋英混講快切（錄音中可秒切）：
+                  </span>
+                  {(
+                    [
+                      { id: 'auto', label: '🇭🇰 廣東話主 (zh-HK)' },
+                      { id: 'zh-TW', label: '🇹🇼 臨時切國語 (zh-TW)' },
+                      { id: 'en-US', label: '🇺🇸 臨時切英文 (en-US)' },
+                    ] as const
+                  ).map((opt) => {
+                    const active =
+                      opt.id === 'auto'
+                        ? liveRecLangOverride === 'auto' || liveRecLangOverride === 'zh-HK'
+                        : liveRecLangOverride === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          liveRecLangOverrideRef.current = opt.id;
+                          setLiveRecLangOverride(opt.id);
+                          if (isLiveListeningRef.current && liveRecRef.current) {
+                            try {
+                              liveRecRef.current.stop();
+                            } catch {
+                              // ignore; onend will immediately respawn using updated ref
+                            }
+                            notify(`🌐 已即時切換收音語系：${opt.label}`);
                           }
-                          notify(`🌐 已即時切換收音語系：${opt.label}`);
-                        }
-                      }}
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-black border transition active:scale-95 ${
-                        active
-                          ? 'bg-[#1E3158] text-white border-[#1E3158] shadow-sm'
-                          : 'bg-white text-[#5C5044] border-[#DDD7C9] hover:border-[#C48E63]'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  );
-                })}
-              </div>
+                        }}
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-black border transition active:scale-95 ${
+                          active
+                            ? 'bg-[#1E3158] text-white border-[#1E3158] shadow-sm'
+                            : 'bg-white text-[#5C5044] border-[#DDD7C9] hover:border-[#C48E63]'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
 
               {/* Primary Record Button + Upload Voice Memo */}
               <div className="flex flex-col sm:flex-row items-stretch gap-2">
@@ -4185,11 +4202,9 @@ export default function App() {
                       <Mic className="w-4 h-4" />
                       <span>
                         🎙️ 開始錄音即時轉中文（聽
-                        {liveRecLangOverride === 'zh-HK'
-                          ? '🇭🇰粵＋英'
-                          : liveRecLangOverride === 'zh-TW'
-                          ? '🇹🇼國＋英'
-                          : liveRecLangOverride === 'en-US'
+                        {vault.profile.activeLang === 'yue' && liveRecLangOverride === 'zh-TW'
+                          ? '🇹🇼國語＋英'
+                          : vault.profile.activeLang === 'yue' && liveRecLangOverride === 'en-US'
                           ? '🇺🇸英文'
                           : `${langCfg.flag}${langCfg.name}`}
                         ）
@@ -4235,7 +4250,7 @@ export default function App() {
                     <strong>同裝置播影片會被「回音消除」抵銷</strong>：瀏覽器會把喇叭播出的聲音誤當回音濾掉；建議用<strong>另一台手機／喇叭播放</strong>並稍微調大聲，或在電腦上改用 <strong>「🖥️ 抓分頁影片音訊」</strong>。
                   </li>
                   <li>
-                    <strong>BGM 背景音樂＋快語速</strong>：免費瀏覽器 <code>Web Speech API</code> 專攻近距離單人慢速口說，遇港劇／YouTube 快速連音常切碎；系統已自動開啟 <strong>2.6 秒停頓合併＋前句自動串接</strong>。
+                    <strong>BGM 背景音樂＋快語速</strong>：免費瀏覽器 <code>Web Speech API</code> 專攻近距離單人慢速口說，遇港劇／YouTube 快速連音常切碎；系統已自動開啟 <strong>1.2 秒停頓即時合併＋前句自動串接</strong>。
                   </li>
                   <li>
                     <strong>想要看廣東話影片／多人閒聊 100% 準確</strong>：點右上角 <strong>⚙️ 綁定免費 Gemini API Key</strong>（Google AI Studio 免付費額度），停錄時會把<strong>完整真實錄音檔</strong>直接交給 AI 聽寫（不怕 BGM、快語速與中英夾雜！）。
@@ -4283,7 +4298,7 @@ export default function App() {
                   )}
                   <div className="flex items-center justify-between gap-2 pt-0.5">
                     <span className="text-[10px] text-[#8A7E70]">
-                      說話停頓 2.6 秒自動合併成句，短碎詞也會自動串回上一張卡！
+                      說話停頓 1.2 秒自動合併成句並秒翻，短碎詞也會自動串回上一張卡！
                     </span>
                     {(liveBufferPreview || liveInterimText) && (
                       <button
@@ -4452,41 +4467,43 @@ export default function App() {
                   ))}
                 </div>
 
-                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
-                  <span className="text-[11px] font-black text-[#1E3158] shrink-0">
-                    🧪 粵＋中＋英 混講測試：
-                  </span>
-                  {TRILINGUAL_MIX_SAMPLES.map((item, i) => (
-                    <div
-                      key={i}
-                      className="inline-flex items-center rounded-full bg-[#F2CA62]/35 border border-[#C48E63] shrink-0 overflow-hidden"
-                    >
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void appendLiveSegment(item.text, {
-                            sourceEngine: 'manual',
-                            speakerLabel: item.speakerLabel,
-                            langOverride: 'yue',
-                          })
-                        }
-                        className="px-2.5 py-1 text-[11px] font-black text-[#2D251E] hover:bg-[#F2CA62]/70 transition"
-                        title={`加入測試句：${item.text}`}
+                {vault.profile.activeLang === 'yue' && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
+                    <span className="text-[11px] font-black text-[#1E3158] shrink-0">
+                      🧪 粵＋中＋英 混講測試：
+                    </span>
+                    {TRILINGUAL_MIX_SAMPLES.map((item, i) => (
+                      <div
+                        key={i}
+                        className="inline-flex items-center rounded-full bg-[#F2CA62]/35 border border-[#C48E63] shrink-0 overflow-hidden"
                       >
-                        {item.label}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => speakTextTTS(item.text, 'zh-HK', 0.9)}
-                        className="px-1.5 py-1 border-l border-[#C48E63]/60 text-[10px] hover:bg-[#F2CA62]/80 text-[#2D251E]"
-                        title="用粵語 TTS 播放這句混講測試音"
-                        aria-label={`試聽 ${item.label}`}
-                      >
-                        🔊
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void appendLiveSegment(item.text, {
+                              sourceEngine: 'manual',
+                              speakerLabel: item.speakerLabel,
+                              langOverride: 'yue',
+                            })
+                          }
+                          className="px-2.5 py-1 text-[11px] font-black text-[#2D251E] hover:bg-[#F2CA62]/70 transition"
+                          title={`加入測試句：${item.text}`}
+                        >
+                          {item.label}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => speakTextTTS(item.text, 'zh-HK', 0.9)}
+                          className="px-1.5 py-1 border-l border-[#C48E63]/60 text-[10px] hover:bg-[#F2CA62]/80 text-[#2D251E]"
+                          title="用粵語 TTS 播放這句混講測試音"
+                          aria-label={`試聽 ${item.label}`}
+                        >
+                          🔊
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </section>
 
@@ -4713,7 +4730,8 @@ export default function App() {
                   .map((seg) => {
                     const sCfg = LANGUAGES[seg.lang] || langCfg;
                     const isEditing = editingLiveSegId === seg.id;
-                    const mixedInfo = detectMixedLanguageTags(seg.originalText);
+                    const mixedInfo =
+                      seg.lang === 'yue' ? detectMixedLanguageTags(seg.originalText) : null;
                     return (
                       <div
                         key={seg.id}
@@ -4724,7 +4742,7 @@ export default function App() {
                             <span>
                               {sCfg.flag} {seg.speakerLabel || `${sCfg.name}收音字幕`}
                             </span>
-                            {mixedInfo.isMixed && mixedInfo.badge && (
+                            {mixedInfo?.isMixed && mixedInfo.badge && (
                               <span className="px-1.5 py-0.5 rounded-full bg-[#F2CA62]/55 border border-[#C48E63] text-[#2D251E] text-[9px] font-black">
                                 {mixedInfo.badge}
                               </span>

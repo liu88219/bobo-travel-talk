@@ -71,6 +71,8 @@ export interface LiveSubtitleSegment {
   romanization?: string;
   highlightKeywords?: string[];
   sourceEngine?: 'speech' | 'gemini-audio' | 'manual';
+  /** 為 true 表示已先即時存下原始聽寫文字，尚未翻譯成中文（可稍後批次或單句補翻） */
+  needsTranslation?: boolean;
   starred?: boolean;
   createdAt: number;
   updatedAt: number;

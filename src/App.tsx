@@ -113,7 +113,7 @@ import {
 
 type ActiveTab = 'talk' | 'live' | 'menu' | 'phrasebook' | 'calc';
 
-const APP_BUILD_VERSION = 'v2.9';
+const APP_BUILD_VERSION = 'v3.0';
 
 const TRILINGUAL_MIX_SAMPLES: Array<{ label: string; text: string; speakerLabel: string }> = [
   {
@@ -174,11 +174,13 @@ interface SpeechRecognitionInstance {
   lang: string;
   continuous: boolean;
   interimResults: boolean;
+  onstart?: (() => void) | null;
   onresult: ((event: unknown) => void) | null;
   onerror: ((event: unknown) => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
+  abort?: () => void;
 }
 
 function getSpeechRecognitionCtor(): (new () => SpeechRecognitionInstance) | null {
@@ -241,6 +243,19 @@ export default function App() {
     'auto' | 'zh-HK' | 'zh-TW' | 'en-US'
   >('auto');
   const liveRecLangOverrideRef = useRef<'auto' | 'zh-HK' | 'zh-TW' | 'en-US'>('auto');
+  const [yueRawFirstMode, setYueRawFirstMode] = useState(false);
+  const yueRawFirstModeRef = useRef(false);
+  const [liveRecEngineState, setLiveRecEngineState] = useState<
+    'idle' | 'listening' | 'reconnecting' | 'stalled'
+  >('idle');
+  const [liveSilentSec, setLiveSilentSec] = useState(0);
+  const [isTranslatingPendingLive, setIsTranslatingPendingLive] = useState(false);
+  const liveLastSpeechAtRef = useRef(0);
+  const liveLastCommittedAtRef = useRef(0);
+  const liveSpawnFnRef = useRef<((override?: string) => void) | null>(null);
+  useEffect(() => {
+    yueRawFirstModeRef.current = yueRawFirstMode;
+  }, [yueRawFirstMode]);
   useEffect(() => {
     if (vault.profile.activeLang !== 'yue' && liveRecLangOverrideRef.current !== 'auto') {
       liveRecLangOverrideRef.current = 'auto';
@@ -1097,6 +1112,65 @@ export default function App() {
         : clean;
 
       liveLastCommittedTextRef.current = textToTranslate;
+      liveLastCommittedAtRef.current = now;
+      const shouldDeferTranslate =
+        targetLang === 'yue' &&
+        isSpeech &&
+        yueRawFirstModeRef.current &&
+        !opts?.langOverride;
+
+      // STEP 1 (0ms Save-First): Persist raw heard words IMMEDIATELY BEFORE any network request!
+      // Guarantees we NEVER lose a spoken Cantonese/foreign word even if translation lags or times out.
+      const targetSegId =
+        shouldMergeIntoLatest && latestSeg
+          ? latestSeg.id
+          : `live-${now}-${Math.random().toString(36).slice(2, 6)}`;
+
+      const nextListInitial: LiveSubtitleSegment[] =
+        shouldMergeIntoLatest && latestSeg
+          ? vaultRef.current.liveSubtitles.map((x) =>
+              x.id === latestSeg.id
+                ? {
+                    ...x,
+                    originalText: textToTranslate,
+                    translatedZh: shouldDeferTranslate ? '' : x.translatedZh || '⏳ 翻譯中…',
+                    needsTranslation: true,
+                    updatedAt: now,
+                  }
+                : x
+            )
+          : [
+              {
+                id: targetSegId,
+                lang: targetLang,
+                speakerLabel: opts?.speakerLabel,
+                originalText: clean,
+                translatedZh: shouldDeferTranslate ? '' : '⏳ 翻譯中…',
+                needsTranslation: true,
+                sourceEngine: opts?.sourceEngine || 'manual',
+                createdAt: now,
+                updatedAt: now,
+              },
+              ...vaultRef.current.liveSubtitles,
+            ].slice(0, 80);
+
+      const initialVault: VaultState = {
+        ...vaultRef.current,
+        isUneditedDefault: false,
+        updatedAt: now,
+        liveSubtitles: nextListInitial,
+      };
+      vaultRef.current = initialVault;
+      setVault(initialVault);
+      void saveLocalVaultState(initialVault);
+
+      // In Cantonese "Raw-First" mode, skip per-sentence network calls while speaking so recording stays
+      // 100% dedicated to catching every single character without latency or rate-limit interference!
+      if (shouldDeferTranslate) {
+        return;
+      }
+
+      // STEP 2: Background translation updates the exact card by ID without ever overwriting newer text.
       try {
         const res = await translateTextDualEngine({
           text: textToTranslate,
@@ -1107,60 +1181,163 @@ export default function App() {
           geminiModel: vaultRef.current.profile.geminiModel,
           skipBackTranslation: true,
         });
-        const nextUpdatedAt = Date.now();
-        if (shouldMergeIntoLatest && latestSeg) {
-          const mergedSeg: LiveSubtitleSegment = {
-            ...latestSeg,
-            originalText: textToTranslate,
-            translatedZh: res.translatedText,
-            romanization: res.romanization,
-            highlightKeywords: res.highlightKeywords,
-            updatedAt: nextUpdatedAt,
-          };
-          const nextList = vaultRef.current.liveSubtitles.map((x) =>
-            x.id === latestSeg.id ? mergedSeg : x
-          );
-          await commitVaultUpdate((prev) => ({
-            ...prev,
-            isUneditedDefault: false,
-            updatedAt: nextUpdatedAt,
-            liveSubtitles: prev.liveSubtitles.map((x) =>
-              x.id === latestSeg.id ? mergedSeg : x
-            ),
-          }));
-          if (!opts?.skipAutoSummary && liveAutoGistEnabled) {
-            void refreshLiveSummary(nextList, true);
-          }
+        const doneAt = Date.now();
+        const latestCur = vaultRef.current.liveSubtitles.find((x) => x.id === targetSegId);
+        // Guard against race condition: if a newer burst already merged extra chars into this card,
+        // keep both the newer originalText and let the newer translation call finish updating it.
+        if (!latestCur || latestCur.originalText !== textToTranslate) {
           return;
         }
-
-        const seg: LiveSubtitleSegment = {
-          id: `live-${nextUpdatedAt}-${Math.random().toString(36).slice(2, 6)}`,
-          lang: targetLang,
-          speakerLabel: opts?.speakerLabel,
-          originalText: clean,
-          translatedZh: res.translatedText,
-          romanization: res.romanization,
-          highlightKeywords: res.highlightKeywords,
-          sourceEngine: opts?.sourceEngine || 'manual',
-          createdAt: nextUpdatedAt,
-          updatedAt: nextUpdatedAt,
-        };
-        const nextList = [seg, ...vaultRef.current.liveSubtitles].slice(0, 80);
+        const translatedList = vaultRef.current.liveSubtitles.map((x) =>
+          x.id === targetSegId
+            ? {
+                ...x,
+                translatedZh: res.translatedText,
+                romanization: res.romanization,
+                highlightKeywords: res.highlightKeywords,
+                needsTranslation: false,
+                updatedAt: doneAt,
+              }
+            : x
+        );
         await commitVaultUpdate((prev) => ({
           ...prev,
           isUneditedDefault: false,
-          updatedAt: nextUpdatedAt,
-          liveSubtitles: [seg, ...prev.liveSubtitles].slice(0, 80),
+          updatedAt: doneAt,
+          liveSubtitles: prev.liveSubtitles.map((x) =>
+            x.id === targetSegId && x.originalText === textToTranslate
+              ? {
+                  ...x,
+                  translatedZh: res.translatedText,
+                  romanization: res.romanization,
+                  highlightKeywords: res.highlightKeywords,
+                  needsTranslation: false,
+                  updatedAt: doneAt,
+                }
+              : x
+          ),
         }));
         if (!opts?.skipAutoSummary && liveAutoGistEnabled) {
-          void refreshLiveSummary(nextList, true);
+          void refreshLiveSummary(translatedList, true);
         }
       } catch {
-        // ignore transient error
+        // Keep the saved originalText visible and mark it retryable — NEVER silently swallow words!
+        const errVault: VaultState = {
+          ...vaultRef.current,
+          liveSubtitles: vaultRef.current.liveSubtitles.map((x) =>
+            x.id === targetSegId && x.originalText === textToTranslate
+              ? {
+                  ...x,
+                  translatedZh: x.translatedZh === '⏳ 翻譯中…' ? '' : x.translatedZh,
+                  needsTranslation: true,
+                }
+              : x
+          ),
+        };
+        vaultRef.current = errVault;
+        setVault(errVault);
+        void saveLocalVaultState(errVault);
       }
     },
     [commitVaultUpdate, liveAutoGistEnabled, refreshLiveSummary]
+  );
+
+  const translateSingleLiveSegment = useCallback(
+    async (segId: string) => {
+      const target = vaultRef.current.liveSubtitles.find((x) => x.id === segId);
+      if (!target) return;
+      try {
+        const res = await translateTextDualEngine({
+          text: target.originalText,
+          direction: 'foreign-to-zh',
+          targetLang: target.lang,
+          tone: 'concise',
+          geminiApiKey: vaultRef.current.profile.geminiApiKey,
+          geminiModel: vaultRef.current.profile.geminiModel,
+          skipBackTranslation: true,
+        });
+        const doneAt = Date.now();
+        await commitVaultUpdate((prev) => ({
+          ...prev,
+          isUneditedDefault: false,
+          updatedAt: doneAt,
+          liveSubtitles: prev.liveSubtitles.map((x) =>
+            x.id === segId
+              ? {
+                  ...x,
+                  translatedZh: res.translatedText,
+                  romanization: res.romanization,
+                  highlightKeywords: res.highlightKeywords,
+                  needsTranslation: false,
+                  updatedAt: doneAt,
+                }
+              : x
+          ),
+        }));
+        notify('✅ 已補翻這句字幕！');
+      } catch {
+        notify('⚠️ 暫時無法連線翻譯，原字已安全保留，稍後可再點一次補翻。');
+      }
+    },
+    [commitVaultUpdate, notify]
+  );
+
+  const translateAllPendingLiveSubtitles = useCallback(
+    async (alsoSummarize = true) => {
+      const pending = vaultRef.current.liveSubtitles.filter(
+        (s) => s.needsTranslation || !s.translatedZh.trim() || s.translatedZh === '⏳ 翻譯中…'
+      );
+      if (pending.length === 0) {
+        if (alsoSummarize && vaultRef.current.liveSubtitles.length > 0) {
+          await refreshLiveSummary(vaultRef.current.liveSubtitles, false);
+        }
+        return;
+      }
+      setIsTranslatingPendingLive(true);
+      try {
+        const updatedMap = new Map<string, Partial<LiveSubtitleSegment>>();
+        for (const seg of pending.slice(0, 30)) {
+          try {
+            const res = await translateTextDualEngine({
+              text: seg.originalText,
+              direction: 'foreign-to-zh',
+              targetLang: seg.lang,
+              tone: 'concise',
+              geminiApiKey: vaultRef.current.profile.geminiApiKey,
+              geminiModel: vaultRef.current.profile.geminiModel,
+              skipBackTranslation: true,
+            });
+            updatedMap.set(seg.id, {
+              translatedZh: res.translatedText,
+              romanization: res.romanization,
+              highlightKeywords: res.highlightKeywords,
+              needsTranslation: false,
+            });
+          } catch {
+            // Keep raw card if one segment fails
+          }
+        }
+        if (updatedMap.size > 0) {
+          const doneAt = Date.now();
+          await commitVaultUpdate((prev) => ({
+            ...prev,
+            isUneditedDefault: false,
+            updatedAt: doneAt,
+            liveSubtitles: prev.liveSubtitles.map((x) => {
+              const patch = updatedMap.get(x.id);
+              return patch ? { ...x, ...patch, updatedAt: doneAt } : x;
+            }),
+          }));
+        }
+        if (alsoSummarize && vaultRef.current.liveSubtitles.length > 0) {
+          await refreshLiveSummary(vaultRef.current.liveSubtitles, false);
+        }
+        notify(`✅ 已批次翻譯 ${updatedMap.size} 句並整理中文大意！`);
+      } finally {
+        setIsTranslatingPendingLive(false);
+      }
+    },
+    [commitVaultUpdate, notify, refreshLiveSummary]
   );
 
   const flushLiveClauseBuffer = useCallback(
@@ -1187,11 +1364,15 @@ export default function App() {
         }
       }
       if (!combined) return;
-      const fresh = dedupeSpeechRecognitionChunk(
-        liveLastCommittedTextRef.current,
-        combined
-      );
-      if (fresh.length >= 2) {
+      const isRecentCommit = Date.now() - liveLastCommittedAtRef.current <= 2500;
+      const fresh = isRecentCommit
+        ? dedupeSpeechRecognitionChunk(liveLastCommittedTextRef.current, combined)
+        : combined;
+      const isCjkTarget =
+        vaultRef.current.profile.activeLang === 'ja' ||
+        vaultRef.current.profile.activeLang === 'yue' ||
+        vaultRef.current.profile.activeLang === 'ko';
+      if (fresh.length >= (isCjkTarget ? 1 : 2)) {
         void appendLiveSegment(fresh, { sourceEngine: 'speech' });
       }
     },
@@ -1201,6 +1382,14 @@ export default function App() {
   const scheduleLiveInterimPreview = useCallback((rawText: string) => {
     const combined = `${liveClauseBufferRef.current} ${rawText}`.trim();
     if (combined.length < 2) {
+      setLiveInterimZh('');
+      return;
+    }
+    // Skip live interim preview calls while Cantonese "raw-first" mode is active so zero extra HTTP latency interferes!
+    if (
+      vaultRef.current.profile.activeLang === 'yue' &&
+      yueRawFirstModeRef.current
+    ) {
       setLiveInterimZh('');
       return;
     }
@@ -1356,6 +1545,7 @@ export default function App() {
                 translatedZh: res.translatedText,
                 romanization: res.romanization,
                 highlightKeywords: res.highlightKeywords,
+                needsTranslation: false,
                 updatedAt: now,
               }
             : x
@@ -1418,6 +1608,9 @@ export default function App() {
     if (isLiveListeningRef.current) {
       isLiveListeningRef.current = false;
       setIsLiveListening(false);
+      setLiveRecEngineState('idle');
+      setLiveSilentSec(0);
+      liveSpawnFnRef.current = null;
 
       // Flush ANY buffered or interim text BEFORE stopping so we never drop the last sentence!
       const leftoverInterim = liveInterimTextRef.current;
@@ -1432,6 +1625,21 @@ export default function App() {
         // ignore
       }
       liveRecRef.current = null;
+
+      const runStopSummary = () => {
+        const hasPendingRaw = vaultRef.current.liveSubtitles.some(
+          (s) => s.needsTranslation || !s.translatedZh.trim() || s.translatedZh === '⏳ 翻譯中…'
+        );
+        if (hasPendingRaw && vaultRef.current.profile.activeLang === 'yue' && yueRawFirstModeRef.current) {
+          void translateAllPendingLiveSubtitles(true);
+        } else if (vaultRef.current.liveSubtitles.length > 0 && liveHeardAnySpeechRef.current) {
+          void refreshLiveSummary(vaultRef.current.liveSubtitles, false);
+        } else if (!liveHeardAnySpeechRef.current) {
+          setLiveSpeechError(
+            '剛剛沒有辨識到清楚的語音句子。常見原因：麥克風離太遠／BGM 太吵／同裝置播影片被回音消除濾掉。錄音中若超過 8 秒沒收到字，可點「🔄 重新喚醒麥克風」或改綁免費 Gemini Key 直接聽音檔！'
+          );
+        }
+      };
 
       // Stop real MediaRecorder and produce playable audio + auto AI/context summary!
       const activeAudioRec = liveAudioRecRef.current;
@@ -1461,15 +1669,7 @@ export default function App() {
               return;
             }
           }
-          setTimeout(() => {
-            if (vaultRef.current.liveSubtitles.length > 0 && liveHeardAnySpeechRef.current) {
-              void refreshLiveSummary(vaultRef.current.liveSubtitles, false);
-            } else if (!liveHeardAnySpeechRef.current) {
-              setLiveSpeechError(
-                '剛剛這段錄音沒有收到瀏覽器語音辨識文字（常見原因：廣東話／影片雜音、音量太小，或這支音檔需透過 AI 解讀）。你可以點下方「🗑️ 刪除錄音」，或到右上角 ⚙️ 綁定免費 Gemini API Key 後點「✨ AI 精準重聽此音檔」轉成中文！'
-              );
-            }
-          }, 700);
+          setTimeout(runStopSummary, 550);
         };
         try {
           activeAudioRec.stop();
@@ -1478,15 +1678,7 @@ export default function App() {
         }
       } else {
         cleanupLiveAudioResources();
-        setTimeout(() => {
-          if (vaultRef.current.liveSubtitles.length > 0 && liveHeardAnySpeechRef.current) {
-            void refreshLiveSummary(vaultRef.current.liveSubtitles, false);
-          } else if (!liveHeardAnySpeechRef.current) {
-            setLiveSpeechError(
-              '剛剛沒有辨識到清楚的語音句子，請確認手機麥克風權限已開啟，並稍微靠近說話者／喇叭再試一次！'
-            );
-          }
-        }, 700);
+        setTimeout(runStopSummary, 550);
       }
       return;
     }
@@ -1515,14 +1707,20 @@ export default function App() {
     setLiveInterimZh('');
 
     const startedAt = Date.now();
+    liveLastSpeechAtRef.current = startedAt;
+    setLiveSilentSec(0);
+    setLiveRecEngineState('listening');
     liveTimerIntervalRef.current = setInterval(() => {
-      setLiveElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+      const nowMs = Date.now();
+      setLiveElapsedSec(Math.max(0, Math.floor((nowMs - startedAt) / 1000)));
+      setLiveSilentSec(Math.max(0, Math.floor((nowMs - liveLastSpeechAtRef.current) / 1000)));
     }, 500);
 
     const hasGeminiKey =
       (vaultRef.current.profile.geminiApiKey || '').trim().length > 10;
     const isIos = detectIosWebKit();
     let triedYueFallback = false;
+    let consecutiveStartErrors = 0;
 
     // 1. CRITICAL FIX: Start Web Speech Recognition SYNCHRONOUSLY FIRST inside the click gesture!
     // Putting `await getUserMedia()` before `rec.start()` breaks iPhone Safari/PWA user gesture
@@ -1542,6 +1740,12 @@ export default function App() {
         rec.interimResults = true;
         let lastFinalIdx = -1;
 
+        rec.onstart = () => {
+          if (liveSessionIdRef.current !== sessionId) return;
+          consecutiveStartErrors = 0;
+          setLiveRecEngineState('listening');
+        };
+
         rec.onresult = (event: unknown) => {
           if (liveSessionIdRef.current !== sessionId) return;
           const e = event as {
@@ -1555,21 +1759,24 @@ export default function App() {
           for (let i = 0; i < e.results.length; i++) {
             const item = e.results[i];
             const txt = (item[0]?.transcript || '').trim();
-            const conf = item[0]?.confidence;
             if (!txt) continue;
             liveHeardAnySpeechRef.current = true;
+            liveLastSpeechAtRef.current = Date.now();
+            setLiveSilentSec(0);
+            setLiveRecEngineState('listening');
             setLiveSpeechError('');
             if (item.isFinal) {
               if (i > lastFinalIdx) {
                 lastFinalIdx = i;
-                if (typeof conf === 'number' && conf > 0 && conf < 0.22 && txt.length < 4) {
-                  continue;
-                }
                 const targetCode = vaultRef.current.profile.activeLang;
-                const cleanPiece = dedupeSpeechRecognitionChunk(
-                  liveClauseBufferRef.current || liveLastCommittedTextRef.current,
-                  txt
-                );
+                const prevCompare =
+                  liveClauseBufferRef.current ||
+                  (Date.now() - liveLastCommittedAtRef.current <= 2500
+                    ? liveLastCommittedTextRef.current
+                    : '');
+                const cleanPiece = prevCompare
+                  ? dedupeSpeechRecognitionChunk(prevCompare, txt)
+                  : txt;
                 if (cleanPiece) {
                   const buf = liveClauseBufferRef.current;
                   const needsLatinSpace =
@@ -1657,10 +1864,14 @@ export default function App() {
             liveInterimTextRef.current = '';
             setLiveInterimText('');
             const targetCode = vaultRef.current.profile.activeLang;
-            const dedupedLeftover = dedupeSpeechRecognitionChunk(
-              liveClauseBufferRef.current || liveLastCommittedTextRef.current,
-              leftover
-            );
+            const prevCompare =
+              liveClauseBufferRef.current ||
+              (Date.now() - liveLastCommittedAtRef.current <= 2500
+                ? liveLastCommittedTextRef.current
+                : '');
+            const dedupedLeftover = prevCompare
+              ? dedupeSpeechRecognitionChunk(prevCompare, leftover)
+              : leftover;
             if (dedupedLeftover) {
               liveHeardAnySpeechRef.current = true;
               const buf = liveClauseBufferRef.current;
@@ -1689,6 +1900,7 @@ export default function App() {
             }
           }
           if (isLiveListeningRef.current) {
+            setLiveRecEngineState('reconnecting');
             liveRestartTimerRef.current = setTimeout(() => {
               if (isLiveListeningRef.current && liveSessionIdRef.current === sessionId) {
                 const useYueFallback =
@@ -1698,21 +1910,34 @@ export default function App() {
                       vaultRef.current.profile.activeLang === 'yue'));
                 spawnSpeechRec(useYueFallback ? 'yue-Hant-HK' : undefined);
               }
-            }, 140);
+            }, 220);
           }
         };
 
         liveRecRef.current = rec;
         rec.start();
       } catch (err) {
+        consecutiveStartErrors += 1;
+        if (isLiveListeningRef.current && liveSessionIdRef.current === sessionId && consecutiveStartErrors <= 3) {
+          setLiveRecEngineState('reconnecting');
+          const backoffMs = consecutiveStartErrors === 1 ? 420 : consecutiveStartErrors === 2 ? 900 : 1500;
+          liveRestartTimerRef.current = setTimeout(() => {
+            if (isLiveListeningRef.current && liveSessionIdRef.current === sessionId) {
+              spawnSpeechRec(langOverride);
+            }
+          }, backoffMs);
+          return;
+        }
+        setLiveRecEngineState('stalled');
         const msg = err instanceof Error ? err.message : '';
         if (!hasGeminiKey) {
           setLiveSpeechError(
-            `⚠️ 即時語音轉字啟動失敗${msg ? `（${msg}）` : ''}。建議在 Safari 分頁開啟或使用 ⚙️ 綁定免費 Gemini Key 錄音轉譯。`
+            `⚠️ 語音辨識引擎短暫暫停${msg ? `（${msg}）` : ''}，請點「🔄 重新喚醒麥克風」繼續（已收到的字都有保留！）。`
           );
         }
       }
     };
+    liveSpawnFnRef.current = spawnSpeechRec;
 
     // On iOS with NO Gemini key, NEVER open MediaRecorder at the same time — it steals the mic from SpeechRecognition!
     const shouldStartAudioRec =
@@ -1801,7 +2026,29 @@ export default function App() {
     notify,
     refreshLiveSummary,
     scheduleLiveInterimPreview,
+    translateAllPendingLiveSubtitles,
   ]);
+
+  const handleWakeSpeechMic = useCallback(() => {
+    if (!isLiveListeningRef.current) return;
+    if (liveRestartTimerRef.current) {
+      clearTimeout(liveRestartTimerRef.current);
+      liveRestartTimerRef.current = null;
+    }
+    try {
+      liveRecRef.current?.abort?.();
+      liveRecRef.current?.stop();
+    } catch {
+      // ignore
+    }
+    liveRecRef.current = null;
+    liveLastSpeechAtRef.current = Date.now();
+    setLiveSilentSec(0);
+    setLiveSpeechError('');
+    setLiveRecEngineState('listening');
+    liveSpawnFnRef.current?.();
+    notify('🔄 已重新喚醒麥克風繼續聽寫（原有字幕全部保留）！');
+  }, [notify]);
 
   const startTabVideoAudioCapture = useCallback(async () => {
     if (isLiveListeningRef.current) {
@@ -4133,47 +4380,77 @@ export default function App() {
 
               {/* Trilingual Code-Switching Live Mic Language Quick Switcher — ONLY shown for Hong Kong/Macau Cantonese (`yue`) */}
               {vault.profile.activeLang === 'yue' && (
-                <div className="flex items-center gap-1.5 flex-wrap px-2.5 py-2 rounded-2xl bg-[#EFECE4]/90 border border-[#DDD7C9]">
-                  <span className="text-[10px] font-black text-[#5C5044] shrink-0">
-                    🇭🇰 粵＋國＋英混講快切（錄音中可秒切）：
-                  </span>
-                  {(
-                    [
-                      { id: 'auto', label: '🇭🇰 廣東話主 (zh-HK)' },
-                      { id: 'zh-TW', label: '🇹🇼 臨時切國語 (zh-TW)' },
-                      { id: 'en-US', label: '🇺🇸 臨時切英文 (en-US)' },
-                    ] as const
-                  ).map((opt) => {
-                    const active =
-                      opt.id === 'auto'
-                        ? liveRecLangOverride === 'auto' || liveRecLangOverride === 'zh-HK'
-                        : liveRecLangOverride === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => {
-                          liveRecLangOverrideRef.current = opt.id;
-                          setLiveRecLangOverride(opt.id);
-                          if (isLiveListeningRef.current && liveRecRef.current) {
-                            try {
-                              liveRecRef.current.stop();
-                            } catch {
-                              // ignore; onend will immediately respawn using updated ref
+                <div className="space-y-1.5 px-2.5 py-2 rounded-2xl bg-[#EFECE4]/90 border border-[#DDD7C9]">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-black text-[#5C5044] shrink-0">
+                      🇭🇰 粵＋國＋英混講快切（錄音中可秒切）：
+                    </span>
+                    {(
+                      [
+                        { id: 'auto', label: '🇭🇰 廣東話主 (zh-HK)' },
+                        { id: 'zh-TW', label: '🇹🇼 臨時切國語 (zh-TW)' },
+                        { id: 'en-US', label: '🇺🇸 臨時切英文 (en-US)' },
+                      ] as const
+                    ).map((opt) => {
+                      const active =
+                        opt.id === 'auto'
+                          ? liveRecLangOverride === 'auto' || liveRecLangOverride === 'zh-HK'
+                          : liveRecLangOverride === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            liveRecLangOverrideRef.current = opt.id;
+                            setLiveRecLangOverride(opt.id);
+                            if (isLiveListeningRef.current && liveRecRef.current) {
+                              try {
+                                liveRecRef.current.stop();
+                              } catch {
+                                // ignore; onend will immediately respawn using updated ref
+                              }
+                              notify(`🌐 已即時切換收音語系：${opt.label}`);
                             }
-                            notify(`🌐 已即時切換收音語系：${opt.label}`);
-                          }
-                        }}
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-black border transition active:scale-95 ${
-                          active
-                            ? 'bg-[#1E3158] text-white border-[#1E3158] shadow-sm'
-                            : 'bg-white text-[#5C5044] border-[#DDD7C9] hover:border-[#C48E63]'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    );
-                  })}
+                          }}
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-black border transition active:scale-95 ${
+                            active
+                              ? 'bg-[#1E3158] text-white border-[#1E3158] shadow-sm'
+                              : 'bg-white text-[#5C5044] border-[#DDD7C9] hover:border-[#C48E63]'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-[#DDD7C9]/70">
+                    <span className="text-[10px] font-black text-[#5C5044] shrink-0">
+                      ⚡ 收字方式：
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setYueRawFirstMode(false)}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-black border transition ${
+                        !yueRawFirstMode
+                          ? 'bg-[#F2CA62] text-[#2D251E] border-[#C48E63] shadow-sm'
+                          : 'bg-white text-[#5C5044] border-[#DDD7C9]'
+                      }`}
+                    >
+                      ⚡ 先存原字＋自動翻中文
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setYueRawFirstMode(true)}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-black border transition ${
+                        yueRawFirstMode
+                          ? 'bg-[#F2CA62] text-[#2D251E] border-[#C48E63] shadow-sm'
+                          : 'bg-white text-[#5C5044] border-[#DDD7C9]'
+                      }`}
+                      title="講太快時可先 0 延遲只留每個粵語原字（直接先看懂），停錄後再一鍵整段翻中文＋整理大意！"
+                    >
+                      📝 先純留粵語原字（最後再整段翻）
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -4261,21 +4538,41 @@ export default function App() {
               {/* Active Recording Status: Live Waveform Meter + Real-Time Chinese Preview! */}
               {isLiveListening && (
                 <div className="p-3.5 rounded-2xl bg-white border-2 border-[#C83D33]/60 space-y-2 shadow-sm">
-                  <div className="flex items-center justify-between gap-2 text-[11px] font-black">
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-black flex-wrap">
                     <span className="text-[#C83D33] flex items-center gap-1.5">
                       <span className="w-2 h-2 rounded-full bg-[#C83D33] animate-ping" />
                       REC {String(Math.floor(liveElapsedSec / 60)).padStart(2, '0')}:
                       {String(liveElapsedSec % 60).padStart(2, '0')} ・ 即時收音中
                     </span>
-                    <span className="text-[#5C5044]">
-                      {liveInterimText || liveBufferPreview
-                        ? '🟢 辨識中・已收到語音'
-                        : liveMicLevel >= 18
-                        ? '🟢 收音音量清晰'
-                        : liveMicLevel >= 6
-                        ? '🟡 稍微靠近一點更清楚'
-                        : '🎙️ 專心聆聽中...'}
-                    </span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[#5C5044]">
+                        {liveRecEngineState === 'stalled'
+                          ? '🔴 語音引擎已暫停'
+                          : liveRecEngineState === 'reconnecting'
+                          ? '🟡 自動重連語音中…'
+                          : liveInterimText || liveBufferPreview
+                          ? '🟢 辨識中・已收到語音'
+                          : liveSilentSec >= 8
+                          ? `🟠 已 ${liveSilentSec} 秒沒收到字`
+                          : liveMicLevel >= 18
+                          ? '🟢 收音音量清晰'
+                          : liveMicLevel >= 6
+                          ? '🟡 稍微靠近一點更清楚'
+                          : '🎙️ 專心聆聽中...'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleWakeSpeechMic}
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-black border transition active:scale-95 ${
+                          liveRecEngineState === 'stalled' || liveSilentSec >= 8
+                            ? 'bg-[#F2CA62] text-[#2D251E] border-[#C48E63] shadow-sm'
+                            : 'bg-[#EFECE4] text-[#5C5044] border-[#DDD7C9] hover:border-[#C48E63]'
+                        }`}
+                        title="如果瀏覽器靜默卡住沒收到字，點一下立即重新喚醒麥克風（已收到的字不會清掉！）"
+                      >
+                        🔄 重新喚醒麥克風
+                      </button>
+                    </div>
                   </div>
                   {/* Live Microphone Level Bar */}
                   <div className="w-full h-2 rounded-full bg-[#EFECE4] overflow-hidden">
@@ -4286,14 +4583,37 @@ export default function App() {
                       style={{ width: `${Math.max(4, liveMicLevel)}%` }}
                     />
                   </div>
-                  <div className="text-xs font-semibold text-[#5C5044] leading-relaxed">
-                    🗣️ 原文緩衝：
-                    {`${liveBufferPreview} ${liveInterimText}`.trim() ||
-                      `正在專心聽身邊的${langCfg.name}對話（會自動合併碎句再翻譯，不會漏字）...`}
+                  <div className="p-2.5 rounded-xl bg-[#FAF8F3] border border-[#DDD7C9] space-y-1">
+                    <div className="text-[10px] font-black text-[#8A7E70]">
+                      🗣️ 即時原字流水稿（0 延遲先留字）：
+                    </div>
+                    <div className="text-sm font-black text-[#2D251E] leading-relaxed break-words">
+                      {liveBufferPreview || liveInterimText ? (
+                        <>
+                          <span>{liveBufferPreview}</span>
+                          {liveInterimText && (
+                            <span className="text-[#8A7E70] font-bold">
+                              {liveBufferPreview ? ' ' : ''}
+                              {liveInterimText}
+                            </span>
+                          )}
+                          <span className="inline-block w-1.5 h-3.5 bg-[#C48E63] ml-1 align-middle animate-pulse rounded-sm" />
+                        </>
+                      ) : (
+                        <span className="text-xs font-bold text-[#8A7E70]">
+                          {`正在專心聽身邊的${langCfg.name}對話（每個字都會先 0 延遲留下來，不會因為翻譯卡住而漏字）...`}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  {liveInterimZh && (
+                  {liveInterimZh && !(vault.profile.activeLang === 'yue' && yueRawFirstMode) && (
                     <div className="p-2.5 rounded-xl bg-[#F2CA62]/30 border border-[#C48E63] text-sm font-black text-[#2D251E]">
                       🇹🇼 即時中文預覽：{liveInterimZh}
+                    </div>
+                  )}
+                  {liveSilentSec >= 8 && !(liveInterimText || liveBufferPreview) && (
+                    <div className="text-[10px] font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded-xl px-2.5 py-1.5 leading-snug">
+                      💡 瀏覽器免費語音辨識遇到小聲、停頓太久或 iPhone 背景省電時容易「睡著」。點右上角 <strong>「🔄 重新喚醒麥克風」</strong> 馬上重新接上收音，原本留下的字都在！
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-2 pt-0.5">
@@ -4677,39 +4997,82 @@ export default function App() {
             )}
 
             {/* Live Subtitle Timeline Header Bar */}
-            {vault.liveSubtitles.length > 0 && (
-              <div className="flex items-center justify-between gap-2 px-1">
-                <span className="text-xs font-black text-[#5C5044]">
-                  📝 逐句字幕紀錄（共 {vault.liveSubtitles.length} 句）
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setLiveSortOrder((prev) =>
-                        prev === 'chronological' ? 'newest-first' : 'chronological'
-                      )
-                    }
-                    className="px-2.5 py-1 rounded-xl bg-[#FAF8F3] border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] inline-flex items-center gap-1"
-                  >
-                    <ArrowDownUp className="w-3 h-3" />
-                    <span>
-                      {liveSortOrder === 'chronological'
-                        ? '⬇️ 對話順序（舊➜新）'
-                        : '⬆️ 最新在上面'}
+            {vault.liveSubtitles.length > 0 && (() => {
+              const pendingCount = vault.liveSubtitles.filter(
+                (s) => s.needsTranslation || !s.translatedZh.trim() || s.translatedZh === '⏳ 翻譯中…'
+              ).length;
+              return (
+                <div className="space-y-1.5">
+                  {pendingCount > 0 && (
+                    <div className="flex items-center justify-between gap-2 flex-wrap px-3 py-2 rounded-2xl bg-[#F2CA62]/35 border border-[#C48E63]">
+                      <span className="text-[11px] font-black text-[#2D251E]">
+                        📝 已先存下 <strong>{pendingCount}</strong> 句原字（尚未翻成中文，可直接讀原字或一鍵批次補翻！）
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isTranslatingPendingLive}
+                        onClick={() => void translateAllPendingLiveSubtitles(true)}
+                        className="px-2.5 py-1 rounded-xl bg-[#1E3158] hover:bg-[#152442] text-white text-[11px] font-black inline-flex items-center gap-1 active:scale-95 transition shrink-0"
+                      >
+                        <Sparkles className="w-3 h-3 text-[#F2CA62]" />
+                        <span>
+                          {isTranslatingPendingLive
+                            ? '批次翻譯中...'
+                            : `✨ 一次翻成中文＋整理大意 (${pendingCount})`}
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-2 px-1 flex-wrap">
+                    <span className="text-xs font-black text-[#5C5044]">
+                      📝 逐句字幕紀錄（共 {vault.liveSubtitles.length} 句）
                     </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleClearAllLiveSubtitles()}
-                    className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#C83D33] inline-flex items-center gap-1"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    <span>清空本輪</span>
-                  </button>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const rawAll = [...vault.liveSubtitles]
+                            .sort((a, b) => a.createdAt - b.createdAt)
+                            .map((s) => s.originalText)
+                            .join('\n');
+                          navigator.clipboard?.writeText(rawAll);
+                          notify('📋 已複製整段即時原字！');
+                        }}
+                        className="px-2.5 py-1 rounded-xl bg-[#FAF8F3] border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] inline-flex items-center gap-1"
+                        title="複製本輪保留的所有原始聽寫文字"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>複製原字</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLiveSortOrder((prev) =>
+                            prev === 'chronological' ? 'newest-first' : 'chronological'
+                          )
+                        }
+                        className="px-2.5 py-1 rounded-xl bg-[#FAF8F3] border border-[#DDD7C9] text-[11px] font-bold text-[#5C5044] inline-flex items-center gap-1"
+                      >
+                        <ArrowDownUp className="w-3 h-3" />
+                        <span>
+                          {liveSortOrder === 'chronological'
+                            ? '⬇️ 對話順序（舊➜新）'
+                            : '⬆️ 最新在上面'}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleClearAllLiveSubtitles()}
+                        className="px-2.5 py-1 rounded-xl bg-white border border-[#DDD7C9] text-[11px] font-bold text-[#C83D33] inline-flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>清空本輪</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Live Subtitle Timeline Cards */}
             <section className="space-y-2.5">
@@ -4850,12 +5213,43 @@ export default function App() {
                           </div>
                         ) : (
                           <>
-                            <div className="text-xs font-semibold text-[#5C5044]">
+                            <div
+                              className={
+                                seg.lang === 'yue'
+                                  ? 'text-sm font-black text-[#2D251E] leading-snug tracking-wide'
+                                  : 'text-xs font-semibold text-[#5C5044]'
+                              }
+                            >
                               {seg.originalText}
                             </div>
-                            <div className="text-base font-black text-[#2D251E] leading-snug">
-                              {seg.translatedZh}
-                            </div>
+                            {seg.translatedZh && seg.translatedZh !== '⏳ 翻譯中…' ? (
+                              <div
+                                className={
+                                  seg.lang === 'yue'
+                                    ? 'text-sm font-bold text-[#1E3158] leading-snug pl-2 border-l-2 border-[#C48E63]'
+                                    : 'text-base font-black text-[#2D251E] leading-snug'
+                                }
+                              >
+                                {seg.translatedZh}
+                              </div>
+                            ) : seg.translatedZh === '⏳ 翻譯中…' ? (
+                              <div className="text-xs font-bold text-[#8A7E70] italic flex items-center gap-1.5">
+                                <span>⏳ 翻譯中…（原字已即時安全保留）</span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between gap-2 flex-wrap px-2.5 py-1.5 rounded-xl bg-[#EFECE4]/90 border border-[#DDD7C9]">
+                                <span className="text-[11px] font-bold text-[#5C5044]">
+                                  📝 已存原字（可直接看字猜意思，或點右側翻成中文）
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => void translateSingleLiveSegment(seg.id)}
+                                  className="px-2 py-0.5 rounded-lg bg-[#F2CA62] hover:bg-[#e5be53] border border-[#C48E63] text-[10px] font-black text-[#2D251E] active:scale-95"
+                                >
+                                  🌐 翻成中文
+                                </button>
+                              </div>
+                            )}
                           </>
                         )}
 

@@ -384,4 +384,36 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
     expect(jaChips.some((c) => c.term === 'meeting')).toBe(false);
     expect(jaChips.some((c) => c.term === 'booking')).toBe(false);
   });
+
+  it('summarizes Cantonese raw-first untranslated segments without blank output or placeholder noise', async () => {
+    const res = await summarizeLiveConversation({
+      targetLang: 'yue',
+      segments: [
+        {
+          id: 'raw-1',
+          lang: 'yue',
+          originalText: '唔該幫我 double check 下個 booking',
+          translatedZh: '',
+          needsTranslation: true,
+          sourceEngine: 'speech',
+          createdAt: 1000,
+          updatedAt: 1000,
+        },
+        {
+          id: 'raw-2',
+          lang: 'yue',
+          originalText: '仲有杯凍檸茶走冰少甜，幾多錢埋單？',
+          translatedZh: '⏳ 翻譯中…',
+          needsTranslation: true,
+          sourceEngine: 'speech',
+          createdAt: 2000,
+          updatedAt: 2000,
+        },
+      ],
+    });
+    expect(res.segmentCount).toBe(2);
+    expect(res.overallGistZh.length).toBeGreaterThan(5);
+    expect(res.overallGistZh).not.toContain('翻譯中');
+    expect(res.bulletPointsZh.every((b) => !b.includes('翻譯中'))).toBe(true);
+  });
 });

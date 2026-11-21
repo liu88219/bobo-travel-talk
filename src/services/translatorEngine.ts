@@ -1338,10 +1338,14 @@ export async function summarizeLiveConversation(params: {
 
   const langCfg = LANGUAGES[params.targetLang];
   const transcriptLines = ordered
-    .map(
-      (s, i) =>
-        `${i + 1}. ${s.speakerLabel ? `[${s.speakerLabel}] ` : ''}${s.originalText}（初譯：${s.translatedZh}）`
-    )
+    .map((s, i) => {
+      const hasValidZh = Boolean(
+        s.translatedZh && s.translatedZh.trim() && !s.needsTranslation && s.translatedZh !== '⏳ 翻譯中…'
+      );
+      return `${i + 1}. ${s.speakerLabel ? `[${s.speakerLabel}] ` : ''}${s.originalText}${
+        hasValidZh ? `（初譯：${s.translatedZh}）` : ''
+      }`;
+    })
     .join('\n');
 
   if (params.geminiApiKey && params.geminiApiKey.trim().length > 10) {
@@ -1434,7 +1438,13 @@ ${transcriptLines}
 
   // Track 2: 100% Free Built-in Contextual Re-translation + Key Fact Extraction
   const joinedForeign = ordered.map((s) => s.originalText.trim()).join('。 ');
-  const fallbackZhFlow = ordered.map((s) => s.translatedZh.trim()).join(' ');
+  const fallbackZhFlow = ordered
+    .map((s) =>
+      s.translatedZh && !s.needsTranslation && s.translatedZh !== '⏳ 翻譯中…'
+        ? s.translatedZh.trim()
+        : s.originalText.trim()
+    )
+    .join(' ');
   const contextGtx = await translateViaGoogleGtx(joinedForeign, params.targetLang, 'zh-TW');
   let mergedFlowZh = contextGtx?.translated?.trim() || fallbackZhFlow;
   if (params.targetLang === 'yue') {
@@ -1450,7 +1460,13 @@ ${transcriptLines}
     ])
   ).slice(0, 6);
 
-  const zhClauses = ordered.map((s) => s.translatedZh.trim()).filter(Boolean);
+  const zhClauses = ordered
+    .map((s) =>
+      s.translatedZh && !s.needsTranslation && s.translatedZh !== '⏳ 翻譯中…'
+        ? s.translatedZh.trim()
+        : s.originalText.trim()
+    )
+    .filter(Boolean);
   const questionClauses = zhClauses.filter((z) => /[？?嗎呢麼幾哪誰怎麼什麼]/.test(z));
   const bullets: string[] = [];
   if (keyFacts.length > 0) {

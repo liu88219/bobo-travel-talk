@@ -917,19 +917,66 @@ export default function App() {
       const clean = foreignSpeech.trim();
       if (!clean) return;
       const targetLang = vaultRef.current.profile.activeLang;
-      liveLastCommittedTextRef.current = clean;
+      const now = Date.now();
+      const isSpeech = (opts?.sourceEngine || 'manual') === 'speech';
+      const isCjkLang = targetLang === 'ja' || targetLang === 'yue' || targetLang === 'ko';
+
+      // Auto-stitch rapid ultra-short speech fragments (e.g. 2-word bursts from noisy audio / Cantonese video)
+      // into the preceding recent card instead of spamming unreadable 2-character cards!
+      const latestSeg = vaultRef.current.liveSubtitles[0];
+      const shouldMergeIntoLatest =
+        isSpeech &&
+        latestSeg &&
+        latestSeg.lang === targetLang &&
+        latestSeg.sourceEngine === 'speech' &&
+        now - latestSeg.updatedAt <= 9500 &&
+        (latestSeg.originalText.length < (isCjkLang ? 18 : 36) ||
+          clean.length <= (isCjkLang ? 6 : 14)) &&
+        latestSeg.originalText.length + clean.length <= (isCjkLang ? 48 : 110);
+
+      const textToTranslate = shouldMergeIntoLatest
+        ? `${latestSeg.originalText}${targetLang === 'ja' || targetLang === 'yue' ? ' ' : ' '}${clean}`.replace(/\s+/g, targetLang === 'ja' || targetLang === 'yue' ? '' : ' ').trim()
+        : clean;
+
+      liveLastCommittedTextRef.current = textToTranslate;
       try {
         const res = await translateTextDualEngine({
-          text: clean,
+          text: textToTranslate,
           direction: 'foreign-to-zh',
           targetLang,
           tone: 'concise',
           geminiApiKey: vaultRef.current.profile.geminiApiKey,
           geminiModel: vaultRef.current.profile.geminiModel,
         });
-        const now = Date.now();
+        const nextUpdatedAt = Date.now();
+        if (shouldMergeIntoLatest && latestSeg) {
+          const mergedSeg: LiveSubtitleSegment = {
+            ...latestSeg,
+            originalText: textToTranslate,
+            translatedZh: res.translatedText,
+            romanization: res.romanization,
+            highlightKeywords: res.highlightKeywords,
+            updatedAt: nextUpdatedAt,
+          };
+          const nextList = vaultRef.current.liveSubtitles.map((x) =>
+            x.id === latestSeg.id ? mergedSeg : x
+          );
+          await commitVaultUpdate((prev) => ({
+            ...prev,
+            isUneditedDefault: false,
+            updatedAt: nextUpdatedAt,
+            liveSubtitles: prev.liveSubtitles.map((x) =>
+              x.id === latestSeg.id ? mergedSeg : x
+            ),
+          }));
+          if (!opts?.skipAutoSummary && liveAutoGistEnabled) {
+            void refreshLiveSummary(nextList, true);
+          }
+          return;
+        }
+
         const seg: LiveSubtitleSegment = {
-          id: `live-${now}-${Math.random().toString(36).slice(2, 6)}`,
+          id: `live-${nextUpdatedAt}-${Math.random().toString(36).slice(2, 6)}`,
           lang: targetLang,
           speakerLabel: opts?.speakerLabel,
           originalText: clean,
@@ -937,14 +984,14 @@ export default function App() {
           romanization: res.romanization,
           highlightKeywords: res.highlightKeywords,
           sourceEngine: opts?.sourceEngine || 'manual',
-          createdAt: now,
-          updatedAt: now,
+          createdAt: nextUpdatedAt,
+          updatedAt: nextUpdatedAt,
         };
         const nextList = [seg, ...vaultRef.current.liveSubtitles].slice(0, 80);
         await commitVaultUpdate((prev) => ({
           ...prev,
           isUneditedDefault: false,
-          updatedAt: now,
+          updatedAt: nextUpdatedAt,
           liveSubtitles: [seg, ...prev.liveSubtitles].slice(0, 80),
         }));
         if (!opts?.skipAutoSummary && liveAutoGistEnabled) {
@@ -1397,10 +1444,10 @@ export default function App() {
                     if (liveFlushTimerRef.current) {
                       clearTimeout(liveFlushTimerRef.current);
                     }
-                    // Wait 1.6s of silence to coalesce rapid fragmented words into a complete sentence!
+                    // Wait 2.6s of real silence to coalesce rapid 2-word fragments (e.g. Cantonese video speech) into complete sentences!
                     liveFlushTimerRef.current = setTimeout(() => {
                       flushLiveClauseBuffer();
-                    }, 1600);
+                    }, 2600);
                   }
                 }
               }
@@ -1454,19 +1501,42 @@ export default function App() {
         };
 
         rec.onend = () => {
-          // Commit any unfinished interim speech before safely restarting WebKit SpeechRecognition!
-          if (liveInterimTextRef.current.trim()) {
-            const leftover = liveInterimTextRef.current.trim();
+          // Fold any short unfinished interim speech into the buffer across WebKit/Chrome restarts
+          // so fast Cantonese/Japanese audio does NOT get cut into 2-character fragments!
+          const leftover = liveInterimTextRef.current.trim();
+          if (leftover) {
             liveInterimTextRef.current = '';
             setLiveInterimText('');
-            flushLiveClauseBuffer(leftover);
+            const targetCode = vaultRef.current.profile.activeLang;
+            const dedupedLeftover = dedupeSpeechRecognitionChunk(
+              liveClauseBufferRef.current || liveLastCommittedTextRef.current,
+              leftover
+            );
+            if (dedupedLeftover) {
+              const joinSep =
+                targetCode === 'ja' || targetCode === 'yue' ? '' : ' ';
+              liveClauseBufferRef.current = liveClauseBufferRef.current
+                ? `${liveClauseBufferRef.current}${joinSep}${dedupedLeftover}`
+                : dedupedLeftover;
+              setLiveBufferPreview(liveClauseBufferRef.current);
+              if (shouldFlushSpeechBuffer(liveClauseBufferRef.current, targetCode)) {
+                flushLiveClauseBuffer();
+              } else if (isLiveListeningRef.current) {
+                if (liveFlushTimerRef.current) {
+                  clearTimeout(liveFlushTimerRef.current);
+                }
+                liveFlushTimerRef.current = setTimeout(() => {
+                  flushLiveClauseBuffer();
+                }, 2600);
+              }
+            }
           }
           if (isLiveListeningRef.current) {
             liveRestartTimerRef.current = setTimeout(() => {
               if (isLiveListeningRef.current) {
                 spawnSpeechRec();
               }
-            }, 260);
+            }, 120);
           }
         };
 
@@ -1496,6 +1566,98 @@ export default function App() {
     refreshLiveSummary,
     scheduleLiveInterimPreview,
   ]);
+
+  const startTabVideoAudioCapture = useCallback(async () => {
+    if (isLiveListeningRef.current) {
+      void toggleLiveStreamListening();
+      return;
+    }
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.getDisplayMedia !== 'function' ||
+      typeof MediaRecorder === 'undefined'
+    ) {
+      notify('⚠️ 此瀏覽器（如手機）不支援「直接擷取分頁音訊」，請用「🎙️ 開始錄音」或「📁 匯入錄音檔」！');
+      return;
+    }
+    try {
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true,
+      });
+      const audioTracks = displayStream.getAudioTracks();
+      // Immediately drop video track(s) since we only need the digital audio stream
+      displayStream.getVideoTracks().forEach((vt) => vt.stop());
+      if (audioTracks.length === 0) {
+        notify('⚠️ 未偵測到分頁音訊！請在彈出視窗勾選「同時分享分頁音訊 (Share tab audio)」再試一次。');
+        return;
+      }
+      const audioOnlyStream = new MediaStream(audioTracks);
+      isLiveListeningRef.current = true;
+      setIsLiveListening(true);
+      setLiveElapsedSec(0);
+      liveAudioStreamRef.current = audioOnlyStream;
+      liveAudioChunksRef.current = [];
+      const startedAt = Date.now();
+      liveTimerIntervalRef.current = setInterval(() => {
+        setLiveElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+      }, 500);
+
+      const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : '';
+      const recorder = preferredMime
+        ? new MediaRecorder(audioOnlyStream, { mimeType: preferredMime })
+        : new MediaRecorder(audioOnlyStream);
+      recorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) {
+          liveAudioChunksRef.current.push(ev.data);
+        }
+      };
+      audioTracks[0].onended = () => {
+        if (isLiveListeningRef.current) {
+          void toggleLiveStreamListening();
+        }
+      };
+      liveAudioRecRef.current = recorder;
+      recorder.start(1000);
+
+      const AudioCtxCtor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext;
+      if (AudioCtxCtor) {
+        const ctx = new AudioCtxCtor();
+        liveAudioCtxRef.current = ctx;
+        const src = ctx.createMediaStreamSource(audioOnlyStream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        src.connect(analyser);
+        const dataArr = new Uint8Array(analyser.frequencyBinCount);
+        const tick = () => {
+          if (!isLiveListeningRef.current) return;
+          analyser.getByteTimeDomainData(dataArr);
+          let sumSq = 0;
+          for (let i = 0; i < dataArr.length; i++) {
+            const v = (dataArr[i] - 128) / 128;
+            sumSq += v * v;
+          }
+          const rms = Math.sqrt(sumSq / dataArr.length);
+          setLiveMicLevel(Math.min(100, Math.round(rms * 380)));
+          liveMeterRafRef.current = requestAnimationFrame(tick);
+        };
+        tick();
+      }
+      notify(
+        '🖥️ 已開始直接擷取影片分頁的數位音訊（無雜音、不被喇叭回音抵銷）！播完一段後點「⏹️ 停止」即轉中文＋大意！'
+      );
+    } catch {
+      notify('已取消分頁音訊擷取。');
+    }
+  }, [notify, toggleLiveStreamListening]);
 
   useEffect(() => {
     return () => {
@@ -3738,13 +3900,39 @@ export default function App() {
                   type="button"
                   disabled={isLiveListening || isProcessingLiveAudio}
                   onClick={() => liveFileInputRef.current?.click()}
-                  className="px-3.5 py-2.5 rounded-2xl bg-white hover:bg-[#EFECE4] border border-[#DDD7C9] text-xs font-black text-[#2D251E] inline-flex items-center justify-center gap-1.5 shrink-0 transition active:scale-95"
+                  className="px-3 py-2.5 rounded-2xl bg-white hover:bg-[#EFECE4] border border-[#DDD7C9] text-xs font-black text-[#2D251E] inline-flex items-center justify-center gap-1 shrink-0 transition active:scale-95"
                   title="匯入 iPhone 語音備忘錄或手機錄音檔 (.m4a/.mp3/.wav)"
                 >
                   <FileAudio className="w-4 h-4 text-[#C48E63]" />
-                  <span>📁 匯入錄音檔</span>
+                  <span>📁 匯入音檔</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isLiveListening || isProcessingLiveAudio}
+                  onClick={() => void startTabVideoAudioCapture()}
+                  className="hidden sm:inline-flex px-3 py-2.5 rounded-2xl bg-white hover:bg-[#EFECE4] border border-[#DDD7C9] text-xs font-black text-[#1E3158] items-center justify-center gap-1 shrink-0 transition active:scale-95"
+                  title="直接擷取 YouTube / IG / 港劇分頁的數位音訊（免經過喇叭麥克風！）"
+                >
+                  <span>🖥️ 抓分頁影片音訊</span>
                 </button>
               </div>
+
+              <details className="rounded-2xl bg-[#EFECE4]/80 border border-[#DDD7C9] px-3 py-1.5 text-[11px] text-[#5C5044]">
+                <summary className="font-black cursor-pointer select-none">
+                  ❓ 用影片測試時，為什麼只收到 2 個字 2 個字？（點我看 3 個原因＆解法）
+                </summary>
+                <ul className="mt-1.5 space-y-1 pl-3 list-disc leading-relaxed">
+                  <li>
+                    <strong>同裝置播影片會被「回音消除」抵銷</strong>：瀏覽器會把喇叭播出的聲音誤當回音濾掉；建議用<strong>另一台手機／喇叭播放</strong>並稍微調大聲，或在電腦上改用 <strong>「🖥️ 抓分頁影片音訊」</strong>。
+                  </li>
+                  <li>
+                    <strong>BGM 背景音樂＋快語速</strong>：免費瀏覽器 <code>Web Speech API</code> 專攻近距離單人慢速口說，遇港劇／YouTube 快速連音常切碎；系統已自動開啟 <strong>2.6 秒停頓合併＋前句自動串接</strong>。
+                  </li>
+                  <li>
+                    <strong>想要看廣東話影片／多人閒聊 100% 準確</strong>：點右上角 <strong>⚙️ 綁定免費 Gemini API Key</strong>（Google AI Studio 免付費額度），停錄時會把<strong>完整真實錄音檔</strong>直接交給 AI 聽寫（不怕 BGM、快語速與中英夾雜！）。
+                  </li>
+                </ul>
+              </details>
 
               {/* Active Recording Status: Live Waveform Meter + Real-Time Chinese Preview! */}
               {isLiveListening && (
@@ -3784,7 +3972,7 @@ export default function App() {
                   )}
                   <div className="flex items-center justify-between gap-2 pt-0.5">
                     <span className="text-[10px] text-[#8A7E70]">
-                      說話停頓 1.6 秒自動成句，或點右鈕立即切句翻譯
+                      說話停頓 2.6 秒自動合併成句，短碎詞也會自動串回上一張卡！
                     </span>
                     {(liveBufferPreview || liveInterimText) && (
                       <button

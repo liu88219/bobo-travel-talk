@@ -809,12 +809,13 @@ export function shouldFlushSpeechBuffer(
 ): boolean {
   const clean = buffer.trim();
   if (!clean) return false;
-  if (/[。！？!?]$/.test(clean)) return true;
   if (targetLang === 'ja' || targetLang === 'ko' || targetLang === 'yue') {
-    return clean.length >= 16;
+    if (/[。！？!?]$/.test(clean) && clean.length >= 6) return true;
+    return clean.length >= 24;
   }
+  if (/[.!?]$/.test(clean) && clean.length >= 12) return true;
   const wordCount = clean.split(/\s+/).filter(Boolean).length;
-  return clean.length >= 36 || wordCount >= 7;
+  return clean.length >= 42 || wordCount >= 8;
 }
 
 /**

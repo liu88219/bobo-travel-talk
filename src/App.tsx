@@ -90,6 +90,7 @@ import {
   summarizeLiveConversation,
   dedupeSpeechRecognitionChunk,
   stitchSpeechFragment,
+  computeSpeechRestartDelay,
   shouldFlushSpeechBuffer,
   translateInterimPreviewFast,
   detectMixedLanguageTags,
@@ -114,7 +115,7 @@ import {
 
 type ActiveTab = 'talk' | 'live' | 'menu' | 'phrasebook' | 'calc';
 
-const APP_BUILD_VERSION = 'v3.1';
+const APP_BUILD_VERSION = 'v3.2';
 
 const TRILINGUAL_MIX_SAMPLES: Array<{ label: string; text: string; speakerLabel: string }> = [
   {
@@ -256,7 +257,10 @@ export default function App() {
   const [isTranslatingPendingLive, setIsTranslatingPendingLive] = useState(false);
   const liveLastSpeechAtRef = useRef(0);
   const liveLastCommittedAtRef = useRef(0);
-  const liveSpawnFnRef = useRef<((override?: string) => void) | null>(null);
+  const liveRecGenRef = useRef(0);
+  const liveSpawnFnRef = useRef<
+    ((override?: string, resetCounters?: boolean) => void) | null
+  >(null);
   useEffect(() => {
     yueRawFirstModeRef.current = yueRawFirstMode;
   }, [yueRawFirstMode]);
@@ -622,11 +626,9 @@ export default function App() {
         activeLang: code,
       },
     }));
-    if (nextChanged && isLiveListeningRef.current && liveRecRef.current) {
-      try {
-        liveRecRef.current.stop();
-      } catch {
-        // ignore
+    if (nextChanged && isLiveListeningRef.current) {
+      if (liveSpawnFnRef.current) {
+        liveSpawnFnRef.current(undefined, true);
       }
       notify(`🔄 隨身收音已切換聽取【${LANGUAGES[code].flag} ${LANGUAGES[code].name}】！`);
     }
@@ -999,6 +1001,30 @@ export default function App() {
   };
 
   // Tab 2: Continuous Ambient Conversation Recorder & Instant Gist Subtitle Engine
+  // Detaches ALL callbacks BEFORE aborting/stopping the old SpeechRecognition instance so an old
+  // async `onend` event can NEVER spawn a competing duplicate engine ("fork-bomb flashing loop")!
+  const detachAndKillLiveRec = useCallback(() => {
+    liveRecGenRef.current += 1;
+    if (liveRestartTimerRef.current) {
+      clearTimeout(liveRestartTimerRef.current);
+      liveRestartTimerRef.current = null;
+    }
+    const prev = liveRecRef.current;
+    liveRecRef.current = null;
+    if (prev) {
+      prev.onstart = null;
+      prev.onresult = null;
+      prev.onerror = null;
+      prev.onend = null;
+      try {
+        prev.abort?.();
+        prev.stop();
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
   const cleanupLiveAudioResources = useCallback(() => {
     if (liveMeterRafRef.current !== null) {
       cancelAnimationFrame(liveMeterRafRef.current);
@@ -1630,12 +1656,7 @@ export default function App() {
       setLiveInterimZh('');
       flushLiveClauseBuffer(leftoverInterim);
 
-      try {
-        liveRecRef.current?.stop();
-      } catch {
-        // ignore
-      }
-      liveRecRef.current = null;
+      detachAndKillLiveRec();
 
       const runStopSummary = () => {
         const hasPendingRaw = vaultRef.current.liveSubtitles.some(
@@ -1732,12 +1753,21 @@ export default function App() {
     const isIos = detectIosWebKit();
     let triedYueFallback = false;
     let consecutiveStartErrors = 0;
+    let rapidCrashCount = 0;
 
     // 1. CRITICAL FIX: Start Web Speech Recognition SYNCHRONOUSLY FIRST inside the click gesture!
     // Putting `await getUserMedia()` before `rec.start()` breaks iPhone Safari/PWA user gesture
     // and steals the exclusive hardware audio session, leaving an empty recording with zero Chinese text!
-    const spawnSpeechRec = (langOverride?: string) => {
+    const spawnSpeechRec = (langOverride?: string, resetCounters = false) => {
       if (!SpeechCtor || !isLiveListeningRef.current || liveSessionIdRef.current !== sessionId) return;
+      if (resetCounters) {
+        consecutiveStartErrors = 0;
+        rapidCrashCount = 0;
+      }
+      // Always detach & abort any prior instance BEFORE spawning a new one so at most ONE engine runs!
+      detachAndKillLiveRec();
+      const myGen = liveRecGenRef.current;
+      const recStartedAt = Date.now();
       try {
         const currentCfg = LANGUAGES[vaultRef.current.profile.activeLang] || langCfg;
         const rec = new SpeechCtor();
@@ -1752,13 +1782,14 @@ export default function App() {
         let lastFinalIdx = -1;
 
         rec.onstart = () => {
-          if (liveSessionIdRef.current !== sessionId) return;
+          if (liveSessionIdRef.current !== sessionId || liveRecGenRef.current !== myGen) return;
           consecutiveStartErrors = 0;
           setLiveRecEngineState('listening');
         };
 
         rec.onresult = (event: unknown) => {
-          if (liveSessionIdRef.current !== sessionId) return;
+          if (liveSessionIdRef.current !== sessionId || liveRecGenRef.current !== myGen) return;
+          rapidCrashCount = 0;
           const e = event as {
             results?: ArrayLike<{
               isFinal?: boolean;
@@ -1829,11 +1860,13 @@ export default function App() {
         };
 
         rec.onerror = (ev: unknown) => {
+          if (liveSessionIdRef.current !== sessionId || liveRecGenRef.current !== myGen) return;
           const errCode = (ev as { error?: string })?.error;
           if (!errCode || errCode === 'no-speech' || errCode === 'aborted') return;
           if (errCode === 'not-allowed' || errCode === 'service-not-allowed') {
             isLiveListeningRef.current = false;
             setIsLiveListening(false);
+            detachAndKillLiveRec();
             cleanupLiveAudioResources();
             setLiveSpeechError(
               '⚠️ 無法啟用即時語音轉中文：請檢查瀏覽器／iPhone 設定中的「麥克風權限」與「聽寫 (Dictation)」是否已開啟。'
@@ -1845,7 +1878,12 @@ export default function App() {
             !triedYueFallback
           ) {
             triedYueFallback = true;
-            setTimeout(() => spawnSpeechRec('yue-Hant-HK'), 150);
+            if (liveRestartTimerRef.current) clearTimeout(liveRestartTimerRef.current);
+            liveRestartTimerRef.current = setTimeout(() => {
+              if (isLiveListeningRef.current && liveSessionIdRef.current === sessionId && liveRecGenRef.current === myGen) {
+                spawnSpeechRec('yue-Hant-HK');
+              }
+            }, 240);
           } else if (errCode === 'audio-capture') {
             if (liveAudioStreamRef.current && !hasGeminiKey) {
               try {
@@ -1869,7 +1907,8 @@ export default function App() {
         };
 
         rec.onend = () => {
-          if (liveSessionIdRef.current !== sessionId) return;
+          if (liveSessionIdRef.current !== sessionId || liveRecGenRef.current !== myGen) return;
+          liveRecRef.current = null;
           const leftover = liveInterimTextRef.current.trim();
           if (leftover) {
             liveInterimTextRef.current = '';
@@ -1911,9 +1950,27 @@ export default function App() {
             }
           }
           if (isLiveListeningRef.current) {
+            const plan = computeSpeechRestartDelay({
+              sessionDurationMs: Date.now() - recStartedAt,
+              rapidCrashCount,
+            });
+            rapidCrashCount = plan.nextRapidCrashCount;
+            if (!plan.shouldRestart) {
+              // Circuit breaker: stop rapid flashing loop cleanly and let user tap Wake calmly!
+              setLiveRecEngineState('stalled');
+              setLiveSpeechError(
+                '⚠️ 瀏覽器語音辨識連續中斷（常見於麥克風剛切換或省電模式）。已停止自動閃跳重連，請點「🔄 重新喚醒麥克風」或「⏹️ 停止再重錄」（原本的字都有安全保留！）。'
+              );
+              return;
+            }
             setLiveRecEngineState('reconnecting');
+            if (liveRestartTimerRef.current) clearTimeout(liveRestartTimerRef.current);
             liveRestartTimerRef.current = setTimeout(() => {
-              if (isLiveListeningRef.current && liveSessionIdRef.current === sessionId) {
+              if (
+                isLiveListeningRef.current &&
+                liveSessionIdRef.current === sessionId &&
+                liveRecGenRef.current === myGen
+              ) {
                 const useYueFallback =
                   triedYueFallback &&
                   (liveRecLangOverrideRef.current === 'zh-HK' ||
@@ -1921,7 +1978,7 @@ export default function App() {
                       vaultRef.current.profile.activeLang === 'yue'));
                 spawnSpeechRec(useYueFallback ? 'yue-Hant-HK' : undefined);
               }
-            }, 220);
+            }, plan.delayMs);
           }
         };
 
@@ -1929,11 +1986,22 @@ export default function App() {
         rec.start();
       } catch (err) {
         consecutiveStartErrors += 1;
-        if (isLiveListeningRef.current && liveSessionIdRef.current === sessionId && consecutiveStartErrors <= 3) {
+        if (
+          isLiveListeningRef.current &&
+          liveSessionIdRef.current === sessionId &&
+          liveRecGenRef.current === myGen &&
+          consecutiveStartErrors <= 3
+        ) {
           setLiveRecEngineState('reconnecting');
-          const backoffMs = consecutiveStartErrors === 1 ? 420 : consecutiveStartErrors === 2 ? 900 : 1500;
+          const backoffMs =
+            consecutiveStartErrors === 1 ? 420 : consecutiveStartErrors === 2 ? 900 : 1500;
+          if (liveRestartTimerRef.current) clearTimeout(liveRestartTimerRef.current);
           liveRestartTimerRef.current = setTimeout(() => {
-            if (isLiveListeningRef.current && liveSessionIdRef.current === sessionId) {
+            if (
+              isLiveListeningRef.current &&
+              liveSessionIdRef.current === sessionId &&
+              liveRecGenRef.current === myGen
+            ) {
               spawnSpeechRec(langOverride);
             }
           }, backoffMs);
@@ -2030,6 +2098,7 @@ export default function App() {
   }, [
     analyzeLiveAudioBlobWithGemini,
     cleanupLiveAudioResources,
+    detachAndKillLiveRec,
     flushLiveClauseBuffer,
     langCfg,
     liveAudioRecordingEnabled,
@@ -2042,24 +2111,39 @@ export default function App() {
 
   const handleWakeSpeechMic = useCallback(() => {
     if (!isLiveListeningRef.current) return;
-    if (liveRestartTimerRef.current) {
-      clearTimeout(liveRestartTimerRef.current);
-      liveRestartTimerRef.current = null;
+    // Save any partial heard text BEFORE cleanly tearing down the old instance
+    const leftover = liveInterimTextRef.current.trim();
+    if (leftover || liveClauseBufferRef.current.trim()) {
+      liveInterimTextRef.current = '';
+      setLiveInterimText('');
+      setLiveInterimZh('');
+      flushLiveClauseBuffer(leftover);
     }
-    try {
-      liveRecRef.current?.abort?.();
-      liveRecRef.current?.stop();
-    } catch {
-      // ignore
+    // Detach ALL handlers BEFORE aborting so the dead instance's async `onend` CANNOT trigger a fork-bomb loop!
+    detachAndKillLiveRec();
+
+    // If an optional backup MediaRecorder stream was competing for the mic without a Gemini key, release it cleanly
+    const hasGeminiKey =
+      (vaultRef.current.profile.geminiApiKey || '').trim().length > 10;
+    if (liveAudioStreamRef.current && !hasGeminiKey) {
+      try {
+        liveAudioRecRef.current?.stop();
+      } catch {
+        // ignore
+      }
+      liveAudioRecRef.current = null;
+      liveAudioStreamRef.current.getTracks().forEach((t) => t.stop());
+      liveAudioStreamRef.current = null;
     }
-    liveRecRef.current = null;
+
     liveLastSpeechAtRef.current = Date.now();
     setLiveSilentSec(0);
     setLiveSpeechError('');
     setLiveRecEngineState('listening');
-    liveSpawnFnRef.current?.();
-    notify('🔄 已重新喚醒麥克風繼續聽寫（原有字幕全部保留）！');
-  }, [notify]);
+    // Start a single clean replacement instance synchronously inside the user tap gesture (iOS-safe!)
+    liveSpawnFnRef.current?.(undefined, true);
+    notify('🔄 已乾淨重啟麥克風收音（原有字幕全部保留）！');
+  }, [detachAndKillLiveRec, flushLiveClauseBuffer, notify]);
 
   const startTabVideoAudioCapture = useCallback(async () => {
     if (isLiveListeningRef.current) {
@@ -2156,14 +2240,10 @@ export default function App() {
   useEffect(() => {
     return () => {
       isLiveListeningRef.current = false;
-      try {
-        liveRecRef.current?.stop();
-      } catch {
-        // ignore
-      }
+      detachAndKillLiveRec();
       cleanupLiveAudioResources();
     };
-  }, [cleanupLiveAudioResources]);
+  }, [cleanupLiveAudioResources, detachAndKillLiveRec]);
 
   // Tab 3: Menu sessions & Real Photo OCR Scanner!
   const currentMenuSession: MenuScanSession | null = useMemo(() => {
@@ -4429,12 +4509,8 @@ export default function App() {
                           onClick={() => {
                             liveRecLangOverrideRef.current = opt.id;
                             setLiveRecLangOverride(opt.id);
-                            if (isLiveListeningRef.current && liveRecRef.current) {
-                              try {
-                                liveRecRef.current.stop();
-                              } catch {
-                                // ignore; onend will immediately respawn using updated ref
-                              }
+                            if (isLiveListeningRef.current) {
+                              liveSpawnFnRef.current?.(undefined, true);
                               notify(`🌐 已即時切換收音語系：${opt.label}`);
                             }
                           }}

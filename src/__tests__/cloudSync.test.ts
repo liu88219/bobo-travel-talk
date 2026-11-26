@@ -33,6 +33,7 @@ import {
   dedupeSpeechRecognitionChunk,
   stitchSpeechFragment,
   cleanOverlapSegmentsForGist,
+  computeSpeechRestartDelay,
   shouldFlushSpeechBuffer,
   summarizeLiveConversation,
 } from '../services/translatorEngine';
@@ -440,5 +441,24 @@ describe('BoboTalk Cloud Sync & Translator Engine', () => {
       '我已經訂好枱喇',
     ]);
     expect(cleaned).toEqual(['聽日七點旺角見', '我已經訂好枱喇']);
+  });
+
+  it('backs off rapid SpeechRecognition crashes and trips the circuit breaker to prevent infinite flashing loops', () => {
+    // Normal idle restart after > 700ms resets rapid crash counter
+    const normal = computeSpeechRestartDelay({ sessionDurationMs: 5000, rapidCrashCount: 2 });
+    expect(normal).toEqual({ shouldRestart: true, delayMs: 260, nextRapidCrashCount: 0 });
+
+    // 1st, 2nd, 3rd rapid crash (< 700ms) back off progressively
+    const c1 = computeSpeechRestartDelay({ sessionDurationMs: 120, rapidCrashCount: 0 });
+    expect(c1).toEqual({ shouldRestart: true, delayMs: 450, nextRapidCrashCount: 1 });
+    const c2 = computeSpeechRestartDelay({ sessionDurationMs: 90, rapidCrashCount: 1 });
+    expect(c2).toEqual({ shouldRestart: true, delayMs: 900, nextRapidCrashCount: 2 });
+    const c3 = computeSpeechRestartDelay({ sessionDurationMs: 110, rapidCrashCount: 2 });
+    expect(c3).toEqual({ shouldRestart: true, delayMs: 1400, nextRapidCrashCount: 3 });
+
+    // 4th rapid crash trips the circuit breaker so UI stops flashing/jumping like a crash!
+    const c4 = computeSpeechRestartDelay({ sessionDurationMs: 80, rapidCrashCount: 3 });
+    expect(c4.shouldRestart).toBe(false);
+    expect(c4.nextRapidCrashCount).toBe(4);
   });
 });

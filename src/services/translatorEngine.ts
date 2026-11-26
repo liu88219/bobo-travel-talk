@@ -1133,6 +1133,26 @@ export function cleanOverlapSegmentsForGist(texts: string[]): string[] {
 }
 
 /**
+ * 計算語音辨識引擎 `onend` 後的自動重連延遲與「防無限閃跳熔斷器」。
+ * 若引擎啟動不到 700ms 就立刻異常結束（常見於麥克風衝突或瀏覽器卡住），
+ * 改採漸進退避並在連錯 3 次後自動熔斷暫停，避免畫面像當機一樣瘋狂重連閃跳！
+ */
+export function computeSpeechRestartDelay(opts: {
+  sessionDurationMs: number;
+  rapidCrashCount: number;
+}): { shouldRestart: boolean; delayMs: number; nextRapidCrashCount: number } {
+  if (opts.sessionDurationMs < 700) {
+    const next = opts.rapidCrashCount + 1;
+    if (next > 3) {
+      return { shouldRestart: false, delayMs: 0, nextRapidCrashCount: next };
+    }
+    const delayMs = next === 1 ? 450 : next === 2 ? 900 : 1400;
+    return { shouldRestart: true, delayMs, nextRapidCrashCount: next };
+  }
+  return { shouldRestart: true, delayMs: 260, nextRapidCrashCount: 0 };
+}
+
+/**
  * 判斷連續聽寫緩衝區是否已形成完整一句話（避免把「あの」「はい」「um」這種碎詞單獨丟給翻譯造成失真）
  */
 export function shouldFlushSpeechBuffer(
